@@ -1,0 +1,32 @@
+[project]
+name = "blender-gpt"
+version = "1.1.1"
+description = "Blender integration powered by OpenAI GPT"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+    {name = "virtualdmns", email = "virtualdmns@gmail.com"}
+]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "openai>=1.0.0",
+]
+
+[project.scripts]
+blender-gpt = "blender_gpt.addon_blender_gpt:main"
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[project.urls]
+"Homepage" = "https://github.com/virtualdmns/blender-gpt"
+"Bug Tracker" = "https://github.com/virtualdmns/blender-gpt/issues"

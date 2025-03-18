@@ -1,0 +1,18 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# json for API key
+.json
+
+
+# Ignore PyCharm and macOS system files
+.idea/
+.DS_Store
