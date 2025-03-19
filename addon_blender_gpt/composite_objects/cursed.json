@@ -1,0 +1,13 @@
+{
+    "_extra_recalc_components_override_force_force_force_force_force_force_force_force_force_force": {
+        "description": "The recursion that stares back",
+        "warning": "Do not stare directly into the abyss of force_force_force",
+        "components": {
+            "visibility": "obj.use_extra_recalc_components_override_force_force_force_force_force_force_force_force_force_force",
+            "others": "obj.use_extra_recalc_components_override_force_force_force_force_force_force_force_force_force_force",
+            "all": "obj.use_extra_recalc_components_override_force_force_force_force_force_force_force_force_force_force",
+            "recursion_depth": "infinite",
+            "sanity_level": "none"
+        }
+    }
+}

@@ -18,3 +18,4 @@ wheels/
 .DS_Store
 
 old/
+config.json
