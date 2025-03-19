@@ -3,6 +3,7 @@
 A Blender addon that integrates GPT to generate and execute Python code for automating tasks in Blender. This addon allows you to describe what you want to do in natural language (e.g., "Create three spheres at different locations and make each a different color (red, green, blue)"), and it will generate and execute the corresponding Blender Python code.
 
 ## Features
+- **No more MCP**: Completely standalone.
 - **Natural Language Input**: Describe your Blender task in plain English, and the addon will generate the Python code to accomplish it.
 - **Code Execution with Undo Support**: Generated code is executed in Blender with undo support, so you can easily revert changes.
 - **Customizable GPT Model**: Choose between GPT-4, GPT-3.5 Turbo, or GPT-4o Mini (default) in the addon preferences.
