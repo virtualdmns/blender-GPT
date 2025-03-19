@@ -7,7 +7,8 @@ import ast
 import os
 import random
 import time
-import openai
+import glob
+from pathlib import Path
 
 # Debug sys.path before any changes
 print("Initial Python sys.path:")
@@ -38,6 +39,9 @@ for package, import_name in required_packages.items():
         print(f"Failed to import {package}: {e}")
         raise ImportError(
             f"{package} not found. Install it with: /Applications/Blender.app/Contents/Resources/4.3/python/bin/python3.11 -m pip install {package}")
+
+# Now import openai after path setup
+import openai
 
 # Load API key
 addon_dir = os.path.dirname(os.path.realpath(__file__))
@@ -97,11 +101,13 @@ rate_limiter = RateLimiter()
 bl_info = {
     "name": "BlenderGPT",
     "author": "virtualdmns",
-    "version": (1, 1, 6),
-    "blender": (3, 0, 0),
+    "version": (1, 1, 8),
+    "blender": (4, 0, 0),
     "location": "View3D > Sidebar > BlenderGPT",
-    "description": "Dynamic GPT integration with primitives for scene creation.",
-    "category": "Interface",
+    "description": "Generate and execute Blender commands using GPT",
+    "warning": "",
+    "doc_url": "",
+    "category": "3D View",
 }
 
 
@@ -138,27 +144,49 @@ def get_scene_info():
 # Command System
 class BlenderGPTCommands:
     @staticmethod
-    def create_object(obj_type, name=None, location=(0, 0, 0), rotation=(0, 0, 0), scale=(1, 1, 1)):
+    def delete_object(name):
+        """Delete an object from the scene."""
         try:
+            print(f"\nAttempting to delete object: {name}")
+            if name.lower() == "everything":
+                # Delete all objects
+                print("Deleting all objects in scene")
+                count = len(bpy.data.objects)
+                for obj in bpy.data.objects:
+                    print(f"Removing object: {obj.name}")
+                    bpy.data.objects.remove(obj, do_unlink=True)
+                return {"status": "success", "message": f"All {count} objects deleted", "count": count}
+            
+            obj = bpy.data.objects.get(name)
+            if not obj:
+                error_msg = f"Object {name} not found"
+                print(error_msg)
+                return {"status": "error", "message": error_msg}
+            
+            print(f"Found object {name}, removing it")
+            bpy.data.objects.remove(obj, do_unlink=True)
+            return {"status": "success", "message": f"Deleted object: {name}", "count": 1}
+        except Exception as e:
+            error_msg = f"Error deleting object {name}: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
+
+    @staticmethod
+    def create_object(obj_type, name=None, location=(0, 0, 0), rotation=(0, 0, 0), scale=(1, 1, 1), color=None):
+        """Create a basic 3D object in the scene."""
+        try:
+            print(f"Creating object: type={obj_type}, name={name}, location={location}, color={color}")
+            
+            # Ensure we're in object mode and nothing is selected
+            if bpy.context.active_object and bpy.context.active_object.mode != 'OBJECT':
+                bpy.ops.object.mode_set(mode='OBJECT')
             bpy.ops.object.select_all(action='DESELECT')
-            if obj_type.upper() not in ['CUBE', 'SPHERE', 'CONE', 'CYLINDER', 'PLANE']:
+            
+            # Validate object type
+            obj_type = obj_type.upper()
+            if obj_type not in ['CUBE', 'SPHERE', 'CONE', 'CYLINDER', 'PLANE']:
                 return {"status": "error",
                         "message": f"Unknown object type: {obj_type}. Use CUBE, SPHERE, CONE, CYLINDER, or PLANE."}
-
-            # Ensure minimum spacing if location is [0,0,0]
-            if location == (0, 0, 0):
-                existing_locations = [obj["location"] for obj in get_scene_info()["objects"]]
-                x, y = 0, 0
-                for i in range(100):  # Try up to 100 times to find a non-overlapping spot
-                    x = random.uniform(-10, 10)
-                    y = random.uniform(-10, 10)
-                    new_location = [x, y, 0]
-                    too_close = any(
-                        ((loc[0] - x) ** 2 + (loc[1] - y) ** 2) < 2 ** 2 for loc in existing_locations
-                    )
-                    if not too_close:
-                        break
-                location = (x, y, 0)
 
             # Map object types to their respective primitive add operators
             primitive_ops = {
@@ -170,28 +198,59 @@ class BlenderGPTCommands:
             }
 
             # Execute the appropriate operator
-            primitive_ops[obj_type.upper()]()
+            print(f"Executing operator for type: {obj_type}")
+            primitive_ops[obj_type]()
+            
+            # Get the created object (it should be the active object)
             obj = bpy.context.active_object
-
             if not obj:
-                return {"status": "error", "message": "Failed to create object"}
+                return {"status": "error", "message": "Failed to create object - no active object"}
 
-            # Set name, rotation, and scale with randomization
-            obj.name = name if name else f"{obj_type}_{random.randint(0, 999)}"
+            print(f"Created object: {obj.name}")
+
+            # Set object properties
+            if name:
+                # Ensure unique name
+                obj.name = name
+                if obj.name != name:  # Blender appends .001 etc. for duplicate names
+                    print(f"Warning: Requested name '{name}' was modified to '{obj.name}' to ensure uniqueness")
+            
             obj.rotation_euler = rotation
-            obj.scale = [s * random.uniform(0.5, 1.5) for s in scale]
+            obj.scale = scale
+            
+            print(f"Object configured: name={obj.name}, rotation={obj.rotation_euler}, scale={obj.scale}")
 
-            # Apply a default material if none specified
-            if not obj.data.materials:
-                mat = bpy.data.materials.new(name=f"{obj.name}_material")
-                mat.use_nodes = True
-                principled = next(n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED')
-                principled.inputs["Base Color"].default_value = [0.5, 0.5, 0.5, 1.0]
+            # Create and apply material
+            mat = bpy.data.materials.new(name=f"{obj.name}_material")
+            mat.use_nodes = True
+            
+            # Get the principled BSDF node
+            principled = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
+            if principled:
+                # Set material properties
+                if color and len(color) == 3:
+                    principled.inputs["Base Color"].default_value = (*color, 1.0)  # RGB + Alpha
+                else:
+                    principled.inputs["Base Color"].default_value = (0.8, 0.8, 0.8, 1.0)
+                principled.inputs["Metallic"].default_value = 0.0
+                principled.inputs["Roughness"].default_value = 0.5
+            
+            # Assign material to object
+            if obj.data.materials:
+                obj.data.materials[0] = mat
+            else:
                 obj.data.materials.append(mat)
+            print(f"Applied material to {obj.name} with color: {color if color else 'default'}")
 
+            # Update the view layer to ensure the object is visible
+            bpy.context.view_layer.update()
+            
             return {"status": "success", "name": obj.name}
+            
         except Exception as e:
-            return {"status": "error", "message": str(e)}
+            error_msg = f"Error creating object: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
 
     @staticmethod
     def set_material(obj_name, color=None, metallic=None, roughness=None):
@@ -234,6 +293,81 @@ class BlenderGPTCommands:
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    @staticmethod
+    def create_composite_object(obj_type, name=None, location=(0,0,0), variations=None):
+        """
+        Create complex composite objects using the COMPOSITE_OBJECTS dictionary
+        """
+        try:
+            obj_type = obj_type.upper()
+            if obj_type not in COMPOSITE_OBJECTS:
+                return {"status": "error", "message": f"Unknown composite object type: {obj_type}"}
+            
+            # Generate base name if none provided
+            base_name = name or f"{obj_type}_{random.randint(0,999)}"
+            created_objects = []
+            
+            # Get object definition
+            obj_def = COMPOSITE_OBJECTS[obj_type]
+            
+            # Apply global variations if provided
+            variation_scales = variations or obj_def.get("variations", {})
+            
+            # Create each component
+            for comp in obj_def["components"]:
+                # Handle multiple instances of the same component
+                count = 1
+                if "count" in comp:
+                    count = random.randint(comp["count"][0], comp["count"][1])
+                
+                for i in range(count):
+                    # Calculate component position
+                    pos_var = comp.get("position_variance", (0, 0, 0))
+                    base_pos = comp.get("position", (0, 0, 0))
+                    comp_loc = (
+                        location[0] + base_pos[0] + random.uniform(-pos_var[0], pos_var[0]),
+                        location[1] + base_pos[1] + random.uniform(-pos_var[1], pos_var[1]),
+                        location[2] + base_pos[2] + random.uniform(-pos_var[2], pos_var[2])
+                    )
+                    
+                    # Calculate scale with variations
+                    base_scale = comp["base_scale"]
+                    scale_var = variation_scales.get(f"{comp['name']}_scale", 0.2)
+                    comp_scale = tuple(
+                        s * random.uniform(1 - scale_var, 1 + scale_var) 
+                        for s in base_scale
+                    )
+                    
+                    # Create the component
+                    obj_result = BlenderGPTCommands.create_object(
+                        comp["type"],
+                        f"{base_name}_{comp['name']}_{i}",
+                        comp_loc,
+                        scale=comp_scale
+                    )
+                    
+                    if obj_result["status"] == "success":
+                        created_objects.append(obj_result)
+                        
+                        # Apply material
+                        mat_def = comp["material"]
+                        if "color_options" in mat_def:
+                            color = random.choice(mat_def["color_options"])
+                        else:
+                            color = mat_def["color"]
+                        
+                        BlenderGPTCommands.set_material(
+                            obj_result["name"],
+                            color=color,
+                            roughness=mat_def.get("roughness", 0.8),
+                            metallic=mat_def.get("metallic", 0.0)
+                        )
+            
+            return {"status": "success", "objects": created_objects}
+            
+        except Exception as e:
+            return {"status": "error", "message": f"Error creating {obj_type}: {str(e)}"}
+
 
 class CommandValidationError(Exception):
     """Custom exception for command validation errors."""
@@ -245,17 +379,11 @@ def validate_command(cmd: dict) -> bool:
     if not isinstance(cmd, dict):
         raise CommandValidationError(f"Command must be a dictionary, got {type(cmd)}")
 
-    if "command" in cmd:
-        cmd_name = cmd["command"]
-        cmd_params = {k: v for k, v in cmd.items() if k != "command"}
-    elif len(cmd) == 1:
-        cmd_name = list(cmd.keys())[0]
-        cmd_params = cmd[cmd_name]
-    else:
-        raise CommandValidationError(f"Invalid command structure: {cmd}")
-
-    if not isinstance(cmd_params, dict):
-        raise CommandValidationError(f"Command parameters must be a dictionary, got {type(cmd_params)}")
+    if "command" not in cmd:
+        raise CommandValidationError(f"Missing 'command' key in command: {cmd}")
+    
+    cmd_name = cmd["command"]
+    cmd_params = {k: v for k, v in cmd.items() if k != "command"}
 
     # Validate specific command types
     if cmd_name == "create_object":
@@ -263,6 +391,13 @@ def validate_command(cmd: dict) -> bool:
             raise CommandValidationError("create_object requires a 'type' parameter")
         if cmd_params["type"].upper() not in ['CUBE', 'SPHERE', 'CONE', 'CYLINDER', 'PLANE']:
             raise CommandValidationError(f"Invalid object type: {cmd_params['type']}")
+        if "color" in cmd_params:
+            if not isinstance(cmd_params["color"], list):
+                raise CommandValidationError("color must be a list of 3 values [r,g,b]")
+            if len(cmd_params["color"]) != 3:
+                raise CommandValidationError("color must be a list of 3 values [r,g,b]")
+            if not all(isinstance(c, (int, float)) for c in cmd_params["color"]):
+                raise CommandValidationError("color values must be numbers")
 
     elif cmd_name == "set_material":
         if "obj_name" not in cmd_params:
@@ -274,6 +409,10 @@ def validate_command(cmd: dict) -> bool:
         if "name" not in cmd_params:
             raise CommandValidationError("modify_object requires a 'name' parameter")
 
+    elif cmd_name == "delete_object":
+        if "name" not in cmd_params:
+            raise CommandValidationError("delete_object requires a 'name' parameter")
+
     return True
 
 
@@ -281,6 +420,20 @@ def validate_command(cmd: dict) -> bool:
 def generate_blender_commands(prompt: str, api_key: str, model: str, scene_info=None, last_result=None,
                               messages=None) -> dict:
     try:
+        print("\n=== Starting Command Generation ===")
+        print(f"Prompt: {prompt}")
+        print(f"Scene info: {json.dumps(scene_info, indent=2)}")
+
+        # Special case for delete everything
+        if prompt.lower().strip() in ["delete everything", "delete all", "clear scene", "remove everything", "remove all"]:
+            print("Using special case for delete everything command")
+            return {
+                "explanation": "Deleting all objects from the scene",
+                "commands": [
+                    {"command": "delete_object", "name": "everything"}
+                ]
+            }
+
         if not rate_limiter.can_make_request():
             return {"error": "Rate limit exceeded. Please wait before making more requests."}
 
@@ -288,8 +441,6 @@ def generate_blender_commands(prompt: str, api_key: str, model: str, scene_info=
 
         api_key = api_key.strip()
         api_key = ''.join(char for char in api_key if ord(char) < 128 and char.isprintable())
-        print(f"Using API key (first 8, last 4): {api_key[:8]}...{api_key[-4:]}")
-        print(f"API key length: {len(api_key)}")
 
         if not api_key:
             raise ValueError("No API key provided. Please set it in config.json.")
@@ -301,29 +452,36 @@ def generate_blender_commands(prompt: str, api_key: str, model: str, scene_info=
                 {
                     "role": "system",
                     "content": (
-                        "You are BlenderGPT, an AI assistant for Blender. Your task is to assist the user by generating commands to modify the scene or providing detailed explanations based on their prompt. "
-                        "Available commands for scene modification:\n"
-                        "- create_object(type, name=None, location=[x,y,z], rotation=[x,y,z], scale=[x,y,z]): Types include CUBE, SPHERE, CONE, CYLINDER, PLANE.\n"
-                        "- set_material(obj_name, color=[r,g,b], metallic=0-1, roughness=0-1): Apply materials with realistic colors and properties.\n"
-                        "- modify_object(name, location=[x,y,z], rotation=[x,y,z], scale=[x,y,z], visible=bool): Adjust existing objects.\n"
-                        "Guidelines:\n"
-                        "1. For scene modification prompts (e.g., 'create a forest', 'add a car'), generate commands:\n"
-                        "   - Break down complex objects into multiple create_object calls (e.g., a 'tree' might use a CYLINDER for the trunk and a CONE for foliage).\n"
-                        "   - Use appropriate primitives (e.g., SPHERE for balls, CUBE for buildings).\n"
-                        "   - Ensure objects are spaced apart by at least 2 units in the X-Y plane, using varied locations (e.g., randomize X and Y between -10 and 10).\n"
-                        "   - Add variation: Randomize scale (0.5-1.5), rotation (especially Z-axis), and colors for diverse results.\n"
-                        "   - For natural objects like trees, apply realistic materials immediately after creation:\n"
-                        "     * Tree trunks: Brown color [0.36, 0.20, 0.09], roughness=0.8, metallic=0.0\n"
-                        "     * Foliage: Green color [0.13, 0.55, 0.13], roughness=0.9, metallic=0.0\n"
-                        "     * Ground: Natural green [0.1, 0.4, 0.1], roughness=1.0, metallic=0.0\n"
-                        "   - Position foliage above trunks proportionally (e.g., foliage_z = trunk_z + trunk_scale_z * 2)\n"
-                        "   - Randomize rotation on all axes (X/Y between -0.1 and 0.1 radians, Z between 0 and 3.14)\n"
-                        "   - Suggest reasonable defaults for missing details (e.g., location, scale).\n"
-                        "   - Use meaningful names (e.g., 'TreeTrunk.001', 'TreeFoliage.001').\n"
-                        "   - Output JSON: {'explanation': str, 'commands': list}, where each command is a dictionary.\n"
-                        "2. For informational prompts (e.g., 'explain the scene'), analyze scene_info and provide details.\n"
-                        "3. If the prompt is vague, ask for clarification in the 'explanation' field.\n"
-                        "4. For natural scenes, consider adding ground planes and appropriate lighting.\n"
+                        "You are BlenderGPT, a command generation system for Blender. Your task is to generate precise commands based on user prompts.\n\n"
+                        "IMPORTANT: You MUST generate valid commands for EVERY request. Do not explain or discuss - just generate the commands.\n\n"
+                        "Available Commands:\n"
+                        "1. Basic Commands:\n"
+                        "- create_object: Creates a basic 3D object\n"
+                        "  Required: 'type': 'CUBE'|'SPHERE'|'CONE'|'CYLINDER'|'PLANE'\n"
+                        "  Optional: 'name': str, 'location': [x,y,z], 'rotation': [x,y,z], 'scale': [x,y,z], 'color': [r,g,b]\n"
+                        "  Example: {'command': 'create_object', 'type': 'CUBE', 'name': 'RedCube', 'location': [0,0,0], 'color': [1,0,0]}\n\n"
+                        "- delete_object: Deletes an object from the scene\n"
+                        "  Required: 'name': str (name of object to delete)\n"
+                        "  Example: {'command': 'delete_object', 'name': 'Cube'}\n\n"
+                        "- set_material: Sets material properties for an object\n"
+                        "  Required: 'obj_name': str\n"
+                        "  Optional: 'color': [r,g,b], 'metallic': float, 'roughness': float\n"
+                        "  Example: {'command': 'set_material', 'obj_name': 'RedCube', 'color': [1,0,0]}\n\n"
+                        "Output format MUST be:\n"
+                        "{\n"
+                        "  'explanation': 'Brief description of what you're creating',\n"
+                        "  'commands': [list of command dictionaries]\n"
+                        "}\n\n"
+                        "Example for 'delete everything':\n"
+                        "{\n"
+                        "  'explanation': 'Deleting all objects from the scene',\n"
+                        "  'commands': [\n"
+                        "    {'command': 'delete_object', 'name': 'Cube'},\n"
+                        "    {'command': 'delete_object', 'name': 'Light'},\n"
+                        "    {'command': 'delete_object', 'name': 'Camera'}\n"
+                        "  ]\n"
+                        "}\n\n"
+                        "ALWAYS generate commands - no discussion or suggestions."
                     )
                 }
             ]
@@ -335,25 +493,54 @@ def generate_blender_commands(prompt: str, api_key: str, model: str, scene_info=
 
         response = client.chat.completions.create(
             model=model,
-            messages=messages,
+            messages=[{"role": m["role"], "content": m["content"]} for m in messages],
             max_tokens=8000,
             temperature=0.7,
         )
         raw_content = response.choices[0].message.content
-        print(f"Raw response content: {raw_content}")
 
         # Parse the response as JSON
         try:
-            parsed_response = json.loads(raw_content)
+            print(f"Raw response content: {raw_content}")
+            # First try to parse as regular JSON
+            try:
+                parsed_response = json.loads(raw_content)
+            except json.JSONDecodeError:
+                # If that fails, try to evaluate as Python literal (handles single quotes)
+                try:
+                    parsed_response = ast.literal_eval(raw_content)
+                except (ValueError, SyntaxError) as e:
+                    print(f"Failed to parse response as Python literal: {e}")
+                    return {
+                        "explanation": "Failed to parse response",
+                        "commands": []
+                    }
+            
+            # Validate the parsed response
+            if not isinstance(parsed_response, dict):
+                print(f"Response is not a dictionary: {parsed_response}")
+                return {
+                    "explanation": "Invalid response format",
+                    "commands": []
+                }
+            
             if "explanation" not in parsed_response or "commands" not in parsed_response:
-                # Not the format we want, but let's salvage it
+                print(f"Response missing required keys: {parsed_response}")
                 return {
                     "explanation": raw_content,
                     "commands": []
                 }
+            
+            # Ensure commands is a list
+            if not isinstance(parsed_response["commands"], list):
+                print(f"Commands is not a list: {parsed_response['commands']}")
+                parsed_response["commands"] = []
+            
+            print(f"Successfully parsed response: {json.dumps(parsed_response, indent=2)}")
             return parsed_response
-        except json.JSONDecodeError:
-            # If GPT returned something that's not JSON, just treat it as plain text
+            
+        except Exception as e:
+            print(f"Error parsing response: {e}\n{traceback.format_exc()}")
             return {
                 "explanation": raw_content,
                 "commands": []
@@ -375,72 +562,89 @@ def generate_blender_commands(prompt: str, api_key: str, model: str, scene_info=
 # Execution
 def execute_generated_commands(commands: dict) -> dict:
     try:
+        print("\n=== Starting Command Execution ===")
+        print(f"Input commands: {json.dumps(commands, indent=2)}")
+        
+        # Push undo state
         bpy.ops.ed.undo_push(message="Before blender_gpt execution")
-        result = {"status": "success", "details": [], "progress": 0}
+        result = {"status": "success", "details": []}
+
+        if not isinstance(commands, dict):
+            error_msg = f"Invalid commands format: expected dict, got {type(commands)}"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
 
         if "commands" not in commands:
-            return {"status": "error", "message": "No 'commands' key found in the input."}
+            error_msg = "No 'commands' key found in input"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
+
+        if not isinstance(commands["commands"], list):
+            error_msg = f"Invalid commands format: expected list, got {type(commands['commands'])}"
+            print(error_msg)
+            return {"status": "error", "message": error_msg}
 
         total_commands = len(commands["commands"])
+        print(f"Total commands to execute: {total_commands}")
+        
         for i, cmd in enumerate(commands["commands"], 1):
             try:
-                print(f"Executing command {i}/{total_commands}: {cmd}")
-                result["progress"] = (i / total_commands) * 100
+                print(f"\n--- Executing command {i}/{total_commands} ---")
+                print(f"Command data: {json.dumps(cmd, indent=2)}")
 
                 # Validate command before execution
+                print("Validating command...")
                 validate_command(cmd)
 
-                if "command" in cmd:
-                    cmd_name = cmd["command"]
-                    cmd_params = {k: v for k, v in cmd.items() if k != "command"}
-                    cmd = {cmd_name: cmd_params}
-                elif len(cmd) == 1:
-                    cmd_name = list(cmd.keys())[0]
-                    cmd_params = cmd[cmd_name]
-                else:
-                    cmd_name = None
-                    cmd_params = {}
-                    if "create_object" in cmd and isinstance(cmd["create_object"], str):
-                        cmd_name = "create_object"
-                        cmd_params = {"type": cmd["create_object"]}
-                        for key in cmd:
-                            if key != "create_object":
-                                cmd_params[key] = cmd[key]
-                    elif "set_material" in cmd or "modify_object" in cmd:
-                        cmd_name = "set_material" if "set_material" in cmd else "modify_object"
-                        cmd_params = cmd
-                    else:
-                        result["details"].append({"status": "error", "message": f"Invalid command structure: {cmd}"})
-                        continue
+                cmd_name = cmd["command"]
+                cmd_params = {k: v for k, v in cmd.items() if k != "command"}
+                print(f"Command name: {cmd_name}")
+                print(f"Command parameters: {json.dumps(cmd_params, indent=2)}")
 
-                # Execute command with progress tracking
+                # Execute command
+                print(f"Executing {cmd_name}...")
                 if cmd_name == "create_object":
                     if "type" in cmd_params:
                         cmd_params["obj_type"] = cmd_params.pop("type")
                     res = BlenderGPTCommands.create_object(**cmd_params)
-                    result["details"].append(res)
-                    if isinstance(res.get("name"), list):
-                        for name in res["name"]:
-                            print(f"Created composite object part: {name}")
                 elif cmd_name == "set_material":
-                    result["details"].append(BlenderGPTCommands.set_material(**cmd_params))
+                    res = BlenderGPTCommands.set_material(**cmd_params)
                 elif cmd_name == "modify_object":
-                    result["details"].append(BlenderGPTCommands.modify_object(**cmd_params))
+                    res = BlenderGPTCommands.modify_object(**cmd_params)
+                elif cmd_name == "delete_object":
+                    res = BlenderGPTCommands.delete_object(**cmd_params)
+                elif cmd_name == "create_composite_object":
+                    res = BlenderGPTCommands.create_composite_object(**cmd_params)
                 else:
-                    result["details"].append({"status": "error", "message": f"Unknown command: {cmd_name}"})
+                    error_msg = f"Unknown command: {cmd_name}"
+                    print(error_msg)
+                    res = {"status": "error", "message": error_msg}
+
+                print(f"Command result: {json.dumps(res, indent=2)}")
+                result["details"].append(res)
+
+                # Update the view layer after each command
+                bpy.context.view_layer.update()
 
             except CommandValidationError as e:
-                result["details"].append({"status": "error", "message": str(e)})
+                error_msg = f"Command validation error: {str(e)}"
+                print(error_msg)
+                result["details"].append({"status": "error", "message": error_msg})
             except Exception as e:
-                result["details"].append({"status": "error", "message": f"Error executing command: {str(e)}"})
+                error_msg = f"Error executing command: {str(e)}\n{traceback.format_exc()}"
+                print(error_msg)
+                result["details"].append({"status": "error", "message": error_msg})
 
+        print("\nUpdating view layer and pushing undo state...")
         bpy.context.view_layer.update()
         bpy.ops.ed.undo_push(message="After blender_gpt execution")
-        result["progress"] = 100
+        print("=== Command Execution Complete ===\n")
         return result
 
     except Exception as e:
-        return {"status": "error", "message": f"{str(e)}\n{traceback.format_exc()}"}
+        error_msg = f"Fatal error in execute_generated_commands: {str(e)}\n{traceback.format_exc()}"
+        print(error_msg)
+        return {"status": "error", "message": error_msg}
 
 
 # Preferences
@@ -504,17 +708,6 @@ class BLENDER_GPT_PT_Panel(bpy.types.Panel):
         row.operator("blender_gpt.generate_code", text="Generate")
         row.operator("blender_gpt.execute_code", text="Execute")
 
-        # Progress Section
-        if hasattr(scene, "blender_gpt_progress"):
-            box = layout.box()
-            box.label(text=f"Progress: {int(scene.blender_gpt_progress)}%", icon='TIME')
-            row = box.row()
-            row.prop(scene, "blender_gpt_progress", text="")
-            if scene.blender_gpt_progress == 100:
-                row.label(text="Complete!", icon='CHECKMARK')
-            elif scene.blender_gpt_progress > 0:
-                row.label(text="Processing...", icon='SORTTIME')
-
         # Generated Commands
         box = layout.box()
         box.label(text="Generated Commands:", icon='TEXT')
@@ -522,37 +715,21 @@ class BLENDER_GPT_PT_Panel(bpy.types.Panel):
             try:
                 cmd_data = json.loads(scene.blender_gpt_generated_code)
                 if "explanation" in cmd_data:
-                    # Split long explanation into multiple lines
-                    explanation = cmd_data["explanation"]
-                    words = explanation.split()
-                    lines = []
-                    current_line = []
+                    box.label(text=cmd_data["explanation"])
 
-                    for word in words:
-                        current_line.append(word)
-                        if len(" ".join(current_line)) > 50:  # Max 50 characters per line
-                            lines.append(" ".join(current_line[:-1]))
-                            current_line = [word]
-                    if current_line:
-                        lines.append(" ".join(current_line))
-
-                    for line in lines:
-                        box.label(text=line)
-
+                # Add text editor for commands with proper styling
                 if "commands" in cmd_data and cmd_data["commands"]:
-                    for cmd in cmd_data["commands"]:
-                        if isinstance(cmd, dict):
-                            if "command" in cmd:
-                                cmd_str = f"• {cmd['command']}: " + ", ".join(
-                                    f"{k}={v}" for k, v in cmd.items() if k != "command")
-                            else:
-                                cmd_name = next(iter(cmd))
-                                cmd_value = cmd[cmd_name]
-                                if isinstance(cmd_value, dict):
-                                    cmd_str = f"• {cmd_name}: " + ", ".join(f"{k}={v}" for k, v in cmd_value.items())
-                                else:
-                                    cmd_str = f"• {cmd_name}: {cmd_value}"
-                            box.label(text=cmd_str, icon='DOT')
+                    commands_text = json.dumps(cmd_data["commands"], indent=2)
+                    text_box = box.box()
+                    text_box.scale_y = 3.0  # Make the text area taller
+                    col = text_box.column()
+                    col.scale_y = 0.6  # Adjust text scaling
+                    col.prop(scene, "blender_gpt_generated_code", text="", icon='TEXT')
+                    
+                    # Add Copy and Clear buttons in a row
+                    row = box.row(align=True)
+                    row.operator("blendergpt.copy_commands", text="Copy", icon='COPYDOWN')
+                    row.operator("blendergpt.clear_commands", text="Clear", icon='X')
             except json.JSONDecodeError:
                 box.label(text="Error parsing commands", icon='ERROR')
         else:
@@ -574,6 +751,10 @@ class BLENDER_GPT_PT_Panel(bpy.types.Panel):
                                 box.label(text=f"⚠ {detail.get('message', 'Unknown error')}", icon='ERROR')
                 else:
                     box.label(text=f"⚠ Error: {result_data.get('message', 'Unknown error')}", icon='ERROR')
+                
+                # Add Copy button for results
+                row = box.row(align=True)
+                row.operator("blendergpt.copy_results", text="Copy Results", icon='COPYDOWN')
             except json.JSONDecodeError:
                 box.label(text=scene.blender_gpt_execution_result)
         else:
@@ -586,7 +767,8 @@ class BLENDER_GPT_PT_Panel(bpy.types.Panel):
             msg_box = box.box()
             row = msg_box.row()
             col = row.column()
-            col.label(text=f"{msg.role}:", icon='USER' if msg.role == 'USER' else 'TEXT')
+            display_role = "Assistant" if msg.role.lower() == "assistant" else msg.role
+            col.label(text=f"{display_role}:", icon='USER' if msg.role == 'USER' else 'TEXT')
 
             # Split message content into multiple lines if needed
             msg_content = msg.msg_content
@@ -640,8 +822,10 @@ class BLENDER_GPT_OT_GenerateCode(bpy.types.Operator):
     bl_description = "Generate Blender commands from prompt"
 
     def execute(self, context):
+        print("\n=== Starting Command Generation ===")
         prefs = context.preferences.addons["addon_blender_gpt"].preferences
         model = prefs.gpt_model
+        print(f"Using model: {model}")
 
         if not api_key:
             self.report({'ERROR'}, "No API key found. Please configure it first.")
@@ -652,16 +836,22 @@ class BLENDER_GPT_OT_GenerateCode(bpy.types.Operator):
             self.report({'WARNING'}, "Please enter a prompt first")
             return {'CANCELLED'}
 
+        print(f"Generating commands for prompt: {prompt}")
         scene_info = get_scene_info()
+        print(f"Current scene info: {json.dumps(scene_info, indent=2)}")
+        
         commands = generate_blender_commands(prompt, api_key, model, scene_info)
+        print(f"Generated commands: {json.dumps(commands, indent=2)}")
 
         if "error" in commands:
+            print(f"Error in command generation: {commands['error']}")
             context.scene.blender_gpt_generated_code = json.dumps({"explanation": f"Error: {commands['error']}"})
             self.report({'ERROR'}, commands['error'])
             return {'CANCELLED'}
 
         context.scene.blender_gpt_generated_code = json.dumps(commands)
         context.scene.blender_gpt_execution_result = ""
+        print("=== Command Generation Complete ===\n")
         self.report({'INFO'}, "Commands generated successfully")
         return {'FINISHED'}
 
@@ -671,27 +861,55 @@ class BLENDER_GPT_OT_ExecuteCode(bpy.types.Operator):
     bl_label = "Execute Code"
 
     def execute(self, context):
+        print("\n=== Starting Command Execution ===")
         code = context.scene.blender_gpt_generated_code
         if not code.strip():
+            print("No commands to execute")
             self.report({'WARNING'}, "No commands to execute.")
             return {'CANCELLED'}
-        try:
-            commands = json.loads(code)
-            result = execute_generated_commands(commands)
 
-            # Update progress in the scene
-            if "progress" in result:
-                context.scene.blender_gpt_progress = result["progress"]
+        try:
+            print(f"Parsing commands from: {code}")
+            commands = json.loads(code)
+            print(f"Parsed commands structure: {json.dumps(commands, indent=2)}")
+            
+            result = execute_generated_commands(commands)
+            print(f"Execution result: {json.dumps(result, indent=2)}")
 
             context.scene.blender_gpt_execution_result = json.dumps(result)
             if result["status"] == "error":
+                print(f"Execution error: {result['message']}")
                 self.report({'ERROR'}, result["message"])
             else:
-                self.report({'INFO'}, "Objects spawned successfully.")
-        except Exception as e:
+                print("Execution completed successfully")
+                # Check if any objects were affected
+                if result.get("details"):
+                    success_count = sum(1 for detail in result["details"] if detail.get("status") == "success")
+                    if success_count > 0:
+                        # Check if this was a deletion operation
+                        is_deletion = any(cmd.get("command") == "delete_object" for cmd in commands.get("commands", []))
+                        if is_deletion:
+                            self.report({'INFO'}, f"Successfully deleted {success_count} objects.")
+                        else:
+                            self.report({'INFO'}, f"Successfully created {success_count} objects.")
+                    else:
+                        self.report({'WARNING'}, "Commands executed but no objects were affected.")
+                else:
+                    self.report({'WARNING'}, "Commands executed but no results were returned.")
+        except json.JSONDecodeError as e:
+            error_msg = f"Failed to parse commands: {str(e)}"
+            print(error_msg)
             context.scene.blender_gpt_execution_result = json.dumps(
-                {"status": "error", "message": f"Execution failed: {str(e)}\n{traceback.format_exc()}"})
+                {"status": "error", "message": error_msg})
+            self.report({'ERROR'}, error_msg)
+        except Exception as e:
+            error_msg = f"Execution failed: {str(e)}\n{traceback.format_exc()}"
+            print(error_msg)
+            context.scene.blender_gpt_execution_result = json.dumps(
+                {"status": "error", "message": error_msg})
             self.report({'ERROR'}, f"Execution failed: {str(e)}")
+        
+        print("=== Command Execution Complete ===\n")
         return {'FINISHED'}
 
 
@@ -705,13 +923,26 @@ class BLENDERGPT_OT_SendMessage(bpy.types.Operator):
         prompt = gpt_props.chat_input
         scene_info = get_scene_info()
 
+        # Add user's message to chat history
+        gpt_props.chat_history.add().from_json({"role": "USER", "msg_content": prompt})
+
+        # This is the Assistant's system prompt
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "You are BlenderGPT, an AI assistant for Blender. Generate commands for any prompt and provide detailed explanations. "
-                    "Analyze scene_info to inform your decisions. For questions, describe the scene with object details. "
-                    "For vague prompts, ask for clarification or make a best guess. Suggest possible adjustments after actions."
+                    "You are a helpful 3D modeling assistant. Your role is to:\n\n"
+                    "1. For direct commands (create/delete/modify):\n"
+                    "   - Execute them immediately without questioning\n"
+                    "   - Explain what you're doing clearly\n"
+                    "   - Confirm when the action is complete\n\n"
+                    "2. For questions about the scene:\n"
+                    "   - Provide clear, technical explanations\n"
+                    "   - Suggest improvements when relevant\n\n"
+                    "3. For unclear requests:\n"
+                    "   - Ask for clarification\n"
+                    "   - Suggest specific options\n\n"
+                    "Be direct and efficient. Don't question clear deletion/modification commands."
                 )
             },
             {"role": "system", "content": f"Current scene: {json.dumps(scene_info, indent=2)}"}
@@ -719,21 +950,51 @@ class BLENDERGPT_OT_SendMessage(bpy.types.Operator):
 
         for msg in gpt_props.chat_history:
             messages.append({"role": msg.role.lower(), "content": msg.msg_content})
-        messages.append({"role": "user", "content": prompt})
 
-        commands = generate_blender_commands(prompt, api_key,
-                                             context.preferences.addons["addon_blender_gpt"].preferences.gpt_model,
-                                             scene_info, messages=messages)
+        # Check if this is a scene modification request
+        should_generate = any(keyword in prompt.lower() for keyword in [
+            "create", "add", "make", "build", "put", "place", "set", "modify", 
+            "change", "move", "rotate", "scale", "delete", "remove", "clear"
+        ])
 
-        gpt_props.chat_history.add().from_json({"role": "USER", "msg_content": prompt})
-        if "error" in commands:
-            gpt_props.chat_history.add().from_json({"role": "BlenderGPT", "msg_content": f"Error: {commands['error']}"})
-        else:
-            explanation = commands.get("explanation", "Commands generated successfully.")
-            gpt_props.chat_history.add().from_json({"role": "BlenderGPT", "msg_content": explanation})
-            if any(keyword in prompt.lower() for keyword in ["create", "add", "modify", "delete"]) and commands.get(
-                    "commands"):
-                bpy.ops.blender_gpt.execute_code()
+        try:
+            # Get response from OpenAI
+            if not api_key:
+                raise ValueError("No API key configured")
+
+            client = openai.Client(api_key=api_key)
+            response = client.chat.completions.create(
+                model=context.preferences.addons["addon_blender_gpt"].preferences.gpt_model,
+                messages=[{"role": m["role"], "content": m["content"]} for m in messages],
+                max_tokens=8000,
+                temperature=0.7,
+            )
+            
+            # Get the assistant's response
+            assistant_message = response.choices[0].message.content
+            
+            # Add assistant's response to chat history
+            gpt_props.chat_history.add().from_json({
+                "role": "assistant", 
+                "msg_content": assistant_message
+            })
+
+            # If it's a modification request, try to generate and execute commands
+            if should_generate:
+                commands = generate_blender_commands(prompt, api_key,
+                                                  context.preferences.addons["addon_blender_gpt"].preferences.gpt_model,
+                                                  scene_info)
+                if "error" not in commands and commands.get("commands"):
+                    scene.blender_gpt_generated_code = json.dumps(commands)
+                    bpy.ops.blender_gpt.execute_code()
+
+        except Exception as e:
+            error_msg = f"Error: {str(e)}"
+            print(f"Chat error: {error_msg}")
+            gpt_props.chat_history.add().from_json({
+                "role": "assistant",
+                "msg_content": error_msg
+            })
 
         gpt_props.chat_input = ""
         return {'FINISHED'}
@@ -748,75 +1009,136 @@ class BLENDERGPT_OT_ClearHistory(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class BLENDERGPT_OT_CopyCommands(bpy.types.Operator):
+    bl_idname = "blendergpt.copy_commands"
+    bl_label = "Copy Commands"
+    bl_description = "Copy generated commands to clipboard"
+
+    def execute(self, context):
+        try:
+            context.window_manager.clipboard = context.scene.blender_gpt_generated_code
+            self.report({'INFO'}, "Commands copied to clipboard")
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to copy commands: {str(e)}")
+        return {'FINISHED'}
+
+
+class BLENDERGPT_OT_ClearCommands(bpy.types.Operator):
+    bl_idname = "blendergpt.clear_commands"
+    bl_label = "Clear Commands"
+    bl_description = "Clear generated commands"
+
+    def execute(self, context):
+        context.scene.blender_gpt_generated_code = ""
+        context.scene.blender_gpt_execution_result = ""
+        self.report({'INFO'}, "Commands cleared")
+        return {'FINISHED'}
+
+
+class BLENDERGPT_OT_CopyResults(bpy.types.Operator):
+    bl_idname = "blendergpt.copy_results"
+    bl_label = "Copy Results"
+    bl_description = "Copy execution results to clipboard"
+
+    def execute(self, context):
+        try:
+            context.window_manager.clipboard = context.scene.blender_gpt_execution_result
+            self.report({'INFO'}, "Results copied to clipboard")
+        except Exception as e:
+            self.report({'ERROR'}, f"Failed to copy results: {str(e)}")
+        return {'FINISHED'}
+
+
+# Load composite object definitions from JSON files
+def load_composite_objects():
+    """Load all composite object definitions from JSON files"""
+    composite_objects = {}
+    addon_dir = os.path.dirname(os.path.realpath(__file__))
+    composite_dir = os.path.join(addon_dir, "composite_objects")
+    
+    if not os.path.exists(composite_dir):
+        print(f"Warning: composite_objects directory not found at {composite_dir}")
+        return composite_objects
+        
+    # Recursively find all JSON files
+    json_files = glob.glob(os.path.join(composite_dir, "**/*.json"), recursive=True)
+    
+    for json_file in json_files:
+        try:
+            with open(json_file, 'r') as f:
+                # Load and merge definitions
+                definitions = json.load(f)
+                composite_objects.update(definitions)
+                print(f"Loaded composite objects from {json_file}")
+        except Exception as e:
+            print(f"Error loading {json_file}: {e}")
+            
+    return composite_objects
+
+
+# Global dictionary to store composite object definitions
+COMPOSITE_OBJECTS = {}
+
+# Load definitions when module is imported
+try:
+    COMPOSITE_OBJECTS = load_composite_objects()
+    print(f"Loaded {len(COMPOSITE_OBJECTS)} composite object definitions")
+except Exception as e:
+    print(f"Error loading composite objects: {e}")
+
+
 # Registration
 classes = [
+    Message,  # Must be registered first since BlenderGPTChatProps depends on it
+    BlenderGPTChatProps,
     BlenderGPTAddonPreferences,
     BLENDER_GPT_PT_Panel,
     BLENDER_GPT_OT_GenerateCode,
     BLENDER_GPT_OT_ExecuteCode,
-    Message,
-    BlenderGPTChatProps,
     BLENDERGPT_OT_SendMessage,
     BLENDERGPT_OT_ClearHistory,
     BLENDERGPT_OT_ConfigureAPIKey,
+    BLENDERGPT_OT_CopyCommands,
+    BLENDERGPT_OT_ClearCommands,
+    BLENDERGPT_OT_CopyResults,  # Add the new operator
 ]
 
 
 def register():
-    print(f"Registering addon: {__name__}")
+    # Register classes first
     for cls in classes:
-        print(f"Registering class: {cls.__name__}")
         bpy.utils.register_class(cls)
-    if hasattr(bpy.types.Scene, "blender_gpt_prompt"):
-        del bpy.types.Scene.blender_gpt_prompt
-    if hasattr(bpy.types.Scene, "blender_gpt_generated_code"):
-        del bpy.types.Scene.blender_gpt_generated_code
-    if hasattr(bpy.types.Scene, "blender_gpt_execution_result"):
-        del bpy.types.Scene.blender_gpt_execution_result
-    if hasattr(bpy.types.Scene, "blendergpt_props"):
-        del bpy.types.Scene.blendergpt_props
-    if hasattr(bpy.types.Scene, "blender_gpt_progress"):
-        del bpy.types.Scene.blender_gpt_progress
 
+    # Then register properties
     bpy.types.Scene.blender_gpt_prompt = bpy.props.StringProperty(
-        default="",
-        description="Enter your prompt here"
+        name="Prompt",
+        description="Enter your scene description or command",
+        default=""
     )
     bpy.types.Scene.blender_gpt_generated_code = bpy.props.StringProperty(
-        options={'TEXTEDIT_UPDATE'},
-        description="Generated commands"
+        name="Generated Commands",
+        description="Generated Blender commands",
+        default=""
     )
     bpy.types.Scene.blender_gpt_execution_result = bpy.props.StringProperty(
-        description="Execution results"
+        name="Execution Result",
+        description="Result of command execution",
+        default=""
     )
-    bpy.types.Scene.blendergpt_props = bpy.props.PointerProperty(
-        type=BlenderGPTChatProps
-    )
-    bpy.types.Scene.blender_gpt_progress = bpy.props.FloatProperty(
-        default=0.0,
-        min=0.0,
-        max=100.0,
-        description="Operation progress"
-    )
-    print("BlenderGPT Addon registered successfully.")
+    # Register this last since it depends on Message class being registered
+    bpy.types.Scene.blendergpt_props = bpy.props.PointerProperty(type=BlenderGPTChatProps)
 
 
 def unregister():
-    print(f"Unregistering addon: {__name__}")
+    # Unregister properties first
+    del bpy.types.Scene.blender_gpt_prompt
+    del bpy.types.Scene.blender_gpt_generated_code
+    del bpy.types.Scene.blender_gpt_execution_result
+    del bpy.types.Scene.blendergpt_props
+
+    # Then unregister classes in reverse order
     for cls in reversed(classes):
-        print(f"Unregistering class: {cls.__name__}")
         bpy.utils.unregister_class(cls)
-    if hasattr(bpy.types.Scene, "blender_gpt_prompt"):
-        del bpy.types.Scene.blender_gpt_prompt
-    if hasattr(bpy.types.Scene, "blender_gpt_generated_code"):
-        del bpy.types.Scene.blender_gpt_generated_code
-    if hasattr(bpy.types.Scene, "blender_gpt_execution_result"):
-        del bpy.types.Scene.blender_gpt_execution_result
-    if hasattr(bpy.types.Scene, "blendergpt_props"):
-        del bpy.types.Scene.blendergpt_props
-    if hasattr(bpy.types.Scene, "blender_gpt_progress"):
-        del bpy.types.Scene.blender_gpt_progress
-    print("BlenderGPT Addon unregistered successfully.")
 
 
 if __name__ == "__main__":
