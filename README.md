@@ -1,3 +1,8 @@
+
+
+
+
+![GPT's Forest](forest.png)
 # BlenderGPT
 
 A Blender addon that harnesses the power of GPT to generate and execute Python code for automating tasks in Blender. Describe what you want in natural language—like "Create a forest with realistic trees" or "Add a car with specific materials"—and this addon will whip up the Blender Python code to make it happen. It's nowhere near finished but it is interesting and has potential.
