@@ -7,7 +7,7 @@ BlenderGPT is a Blender addon that leverages AI to generate and execute Python s
 
 - **Natural Language Scene Generation**: Describe your scene in plain English (e.g., "Create a model of the solar system with the Sun and planets as spheres"), and BlenderGPT will generate and execute the corresponding Blender Python script.
 - **Iterative Scene Enhancement**: Automatically refine your scene over multiple iterations by analyzing the current state and adding complementary elements (e.g., adding moons to planets in a solar system model). Each iteration includes a 1-second pause for visual feedback, and you can cancel at any time by pressing the Esc key.
-- **Dual Panel Access**: Access BlenderGPT in either the Sidebar (View3D > Sidebar > BlenderGPT) or the Properties panel (Properties > Scene > BlenderGPT).
+- **Easy Access**: Access BlenderGPT in the Sidebar (View3D > Sidebar > BlenderGPT).
 - **Progress Tracking**: A progress bar displays the current iteration and percentage completion during iterative generation.
 - **Detailed Logging**: View detailed logs in the Blender console, including scene analysis, generated prompts, and executed scripts for each iteration.
 - **Chat Interface**: Interact with BlenderGPT in Assistant mode for script generation or Dreamer mode for creative scene interpretation.
