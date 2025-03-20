@@ -11,6 +11,9 @@ sleep 3
 # Get the directory of this script
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# Get the parent directory of the script
+PARENT_DIR="$(dirname "$SCRIPT_DIR")"
+
 # Path to Blender's addons directory
 BLENDER_ADDONS_DIR="$HOME/Library/Application Support/Blender/4.3/scripts/addons"
 
@@ -20,7 +23,7 @@ mkdir -p "$TEMP_DIR"
 
 # Create zip file
 echo "Creating addon zip file..."
-cd "$SCRIPT_DIR"
+cd "$PARENT_DIR"
 ZIP_FILE="$TEMP_DIR/addon_blender_gpt.zip"
 rm -f "$ZIP_FILE"
 zip -r "$ZIP_FILE" addon_blender_gpt/

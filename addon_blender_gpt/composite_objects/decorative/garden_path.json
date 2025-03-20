@@ -1,0 +1,29 @@
+{
+    "GARDEN_PATH": {
+        "components": [
+            {
+                "type": "PLANE",
+                "name": "path",
+                "base_scale": [1.0, 0.2, 0.01],
+                "material": {
+                    "color": [0.5, 0.5, 0.5],
+                    "roughness": 0.9
+                }
+            },
+            {
+                "type": "CUBE",
+                "name": "stone",
+                "count": [5, 10],
+                "base_scale": [0.1, 0.1, 0.05],
+                "material": {
+                    "color": [0.4, 0.4, 0.4],
+                    "roughness": 0.8
+                }
+            }
+        ],
+        "variations": {
+            "path_width": [0.5, 1.0],
+            "stone_density": [0.5, 1.0]
+        }
+    }
+} 

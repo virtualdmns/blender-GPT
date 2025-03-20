@@ -8,8 +8,12 @@ import os
 import random
 import time
 import glob
+from .dreamer import Dreamer
 from pathlib import Path
 from typing import Dict
+from io import StringIO
+import math
+import requests  # For better HTTP error handling
 
 # Debug sys.path before any changes
 print("Initial Python sys.path:")
@@ -40,7 +44,8 @@ for p in sys.path:
 
 # Verify required packages
 required_packages = {
-    'openai': 'openai'
+    'openai': 'openai',
+    'requests': 'requests'  # Added for better HTTP handling
 }
 
 for package, import_name in required_packages.items():
@@ -59,24 +64,50 @@ import openai
 def load_api_key():
     global api_key
     addon_dir = os.path.dirname(os.path.realpath(__file__))
-    config_path = os.path.join(addon_dir, "config.json")
-    print(f"Looking for config.json at: {config_path}")
+    print(f"Addon directory: {addon_dir}")
     
-    if os.path.exists(config_path):
+    # Check for config.json in the parent directory
+    parent_dir = os.path.dirname(addon_dir)
+    config_path_parent = os.path.join(parent_dir, "config.json")
+    print(f"Looking for config.json in parent directory: {config_path_parent}")
+    
+    if os.path.exists(config_path_parent):
         try:
-            with open(config_path, 'r') as config_file:
+            with open(config_path_parent, 'r') as config_file:
                 config = json.load(config_file)
+                print(f"Config contents from parent directory: {config}")
                 api_key = config.get("openai_api_key", "").strip()
                 if api_key:
-                    print("Successfully loaded API key from config.json")
+                    print("Successfully loaded API key from config.json in parent directory")
                     return api_key
                 else:
-                    print("No API key found in config.json")
+                    print("No API key found in config.json in parent directory")
         except Exception as e:
-            print(f"Error loading API key from config.json: {e}")
+            print(f"Error loading API key from config.json in parent directory: {e}")
+    else:
+        print("No config.json found in parent directory")
+    
+    # If not found in parent directory, check inside the addon directory
+    config_path_addon = os.path.join(addon_dir, "config.json")
+    print(f"Looking for config.json in addon directory: {config_path_addon}")
+    
+    if os.path.exists(config_path_addon):
+        try:
+            with open(config_path_addon, 'r') as config_file:
+                config = json.load(config_file)
+                print(f"Config contents from addon directory: {config}")
+                api_key = config.get("openai_api_key", "").strip()
+                if api_key:
+                    print("Successfully loaded API key from config.json in addon directory")
+                    return api_key
+                else:
+                    print("No API key found in config.json in addon directory")
+        except Exception as e:
+            print(f"Error loading API key from config.json in addon directory: {e}")
             api_key = None
     else:
         print("No config.json found in addon directory")
+    
     return api_key
 
 def save_api_key(api_key: str):
@@ -121,7 +152,7 @@ check_config_during_install()
 
 # Rate limiting
 class RateLimiter:
-    def __init__(self, max_requests=120, time_window=60):  # Increased to 120 requests per minute
+    def __init__(self, max_requests=120, time_window=60):
         self.max_requests = max_requests
         self.time_window = time_window
         self.requests = []
@@ -129,17 +160,13 @@ class RateLimiter:
 
     def can_make_request(self):
         current_time = time.time()
-        
-        # Only clean up old requests every 5 seconds to avoid constant cleanup
         if current_time - self.last_cleanup > 5:
             self.requests = [t for t in self.requests if current_time - t < self.time_window]
             self.last_cleanup = current_time
-            
         return len(self.requests) < self.max_requests
 
     def add_request(self):
         self.requests.append(time.time())
-
 
 rate_limiter = RateLimiter()
 
@@ -154,7 +181,6 @@ bl_info = {
     "doc_url": "",
     "category": "3D View",
 }
-
 
 # Message class for chat history
 class Message(bpy.types.PropertyGroup):
@@ -174,7 +200,6 @@ class Message(bpy.types.PropertyGroup):
         """Initialize from JSON data"""
         self.role = data.get("role", "USER")
         self.msg_content = data.get("msg_content", "")
-
 
 # Chat properties
 class BlenderGPTChatProps(bpy.types.PropertyGroup):
@@ -198,7 +223,6 @@ class BlenderGPTChatProps(bpy.types.PropertyGroup):
         ],
         default='ASSISTANT'
     )
-
 
 # Panel class
 class BLENDER_GPT_PT_Panel(bpy.types.Panel):
@@ -235,26 +259,15 @@ class BLENDER_GPT_PT_Panel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Generated Commands:", icon='TEXT')
         if scene.blender_gpt_generated_code:
-            try:
-                cmd_data = json.loads(scene.blender_gpt_generated_code)
-                if "explanation" in cmd_data:
-                    box.label(text=cmd_data["explanation"])
-
-                # Add text editor for commands with proper styling
-                if "commands" in cmd_data and cmd_data["commands"]:
-                    commands_text = json.dumps(cmd_data["commands"], indent=2)
-                    text_box = box.box()
-                    text_box.scale_y = 3.0  # Make the text area taller
-                    col = text_box.column()
-                    col.scale_y = 0.6  # Adjust text scaling
-                    col.prop(scene, "blender_gpt_generated_code", text="", icon='TEXT')
-                    
-                    # Add Copy and Clear buttons in a row
-                    row = box.row(align=True)
-                    row.operator("blendergpt.copy_commands", text="Copy", icon='COPYDOWN')
-                    row.operator("blendergpt.clear_commands", text="Clear", icon='X')
-            except json.JSONDecodeError:
-                box.label(text="Error parsing commands", icon='ERROR')
+            text_box = box.box()
+            text_box.scale_y = 3.0
+            col = text_box.column()
+            col.scale_y = 0.6
+            col.prop(scene, "blender_gpt_generated_code", text="", icon='TEXT')
+            
+            row = box.row(align=True)
+            row.operator("blendergpt.copy_commands", text="Copy", icon='COPYDOWN')
+            row.operator("blendergpt.clear_commands", text="Clear", icon='X')
         else:
             box.label(text="No commands generated yet")
 
@@ -262,24 +275,9 @@ class BLENDER_GPT_PT_Panel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Result:", icon='INFO')
         if scene.blender_gpt_execution_result:
-            try:
-                result_data = json.loads(scene.blender_gpt_execution_result)
-                if result_data["status"] == "success":
-                    box.label(text="✓ Success!", icon='CHECKMARK')
-                    if "details" in result_data:
-                        for detail in result_data["details"]:
-                            if detail["status"] == "success":
-                                box.label(text=f"• {detail.get('name', 'Operation')} created", icon='DOT')
-                            else:
-                                box.label(text=f"⚠ {detail.get('message', 'Unknown error')}", icon='ERROR')
-                else:
-                    box.label(text=f"⚠ Error: {result_data.get('message', 'Unknown error')}", icon='ERROR')
-                
-                # Add Copy button for results
-                row = box.row(align=True)
-                row.operator("blendergpt.copy_results", text="Copy Results", icon='COPYDOWN')
-            except json.JSONDecodeError:
-                box.label(text=scene.blender_gpt_execution_result)
+            box.label(text=scene.blender_gpt_execution_result)
+            row = box.row(align=True)
+            row.operator("blendergpt.copy_results", text="Copy Results", icon='COPYDOWN')
         else:
             box.label(text="No results yet")
 
@@ -293,7 +291,6 @@ class BLENDER_GPT_PT_Panel(bpy.types.Panel):
             display_role = msg.role if msg.role in ["DREAMER", "USER"] else "Assistant"
             col.label(text=f"{display_role}:", icon='USER' if msg.role == 'USER' else 'TEXT')
 
-            # Split message content into multiple lines if needed
             msg_content = msg.msg_content
             words = msg_content.split()
             lines = []
@@ -301,7 +298,7 @@ class BLENDER_GPT_PT_Panel(bpy.types.Panel):
 
             for word in words:
                 current_line.append(word)
-                if len(" ".join(current_line)) > 50:  # Max 50 characters per line
+                if len(" ".join(current_line)) > 50:
                     lines.append(" ".join(current_line[:-1]))
                     current_line = [word]
             if current_line:
@@ -316,11 +313,10 @@ class BLENDER_GPT_PT_Panel(bpy.types.Panel):
         row.operator("blendergpt.clear_history", text="Clear")
         row.operator("blendergpt.copy_chat", text="Copy Chat", icon='COPYDOWN')
 
-        # Mode Toggle (moved to bottom)
+        # Mode Toggle
         box = layout.box()
         box.label(text="Mode:", icon='MODIFIER')
         box.prop(gpt_props, "mode", expand=True)
-
 
 # Scene Inspection
 def get_scene_info():
@@ -351,16 +347,13 @@ def get_scene_info():
         scene_info["materials"].append(mat_info)
     return scene_info
 
-
-# Command System
+# Command System (Unused in current script-based workflow, but kept for potential future use)
 class BlenderGPTCommands:
     @staticmethod
     def delete_object(name):
-        """Delete an object from the scene."""
         try:
             print(f"\nAttempting to delete object: {name}")
             if name.lower() == "everything":
-                # Delete all objects
                 print("Deleting all objects in scene")
                 count = len(bpy.data.objects)
                 for obj in bpy.data.objects:
@@ -384,22 +377,18 @@ class BlenderGPTCommands:
 
     @staticmethod
     def create_object(obj_type, name=None, location=(0, 0, 0), rotation=(0, 0, 0), scale=(1, 1, 1), color=None):
-        """Create a basic 3D object in the scene."""
         try:
             print(f"Creating object: type={obj_type}, name={name}, location={location}, color={color}")
             
-            # Ensure we're in object mode and nothing is selected
             if bpy.context.active_object and bpy.context.active_object.mode != 'OBJECT':
                 bpy.ops.object.mode_set(mode='OBJECT')
             bpy.ops.object.select_all(action='DESELECT')
             
-            # Validate object type
             obj_type = obj_type.upper()
             if obj_type not in ['CUBE', 'SPHERE', 'CONE', 'CYLINDER', 'PLANE']:
                 return {"status": "error",
                         "message": f"Unknown object type: {obj_type}. Use CUBE, SPHERE, CONE, CYLINDER, or PLANE."}
 
-            # Map object types to their respective primitive add operators
             primitive_ops = {
                 'CUBE': lambda: bpy.ops.mesh.primitive_cube_add(size=2, location=location),
                 'SPHERE': lambda: bpy.ops.mesh.primitive_uv_sphere_add(radius=1, location=location),
@@ -408,22 +397,18 @@ class BlenderGPTCommands:
                 'PLANE': lambda: bpy.ops.mesh.primitive_plane_add(size=2, location=location)
             }
 
-            # Execute the appropriate operator
             print(f"Executing operator for type: {obj_type}")
             primitive_ops[obj_type]()
             
-            # Get the created object (it should be the active object)
             obj = bpy.context.active_object
             if not obj:
                 return {"status": "error", "message": "Failed to create object - no active object"}
 
             print(f"Created object: {obj.name}")
 
-            # Set object properties
             if name:
-                # Ensure unique name
                 obj.name = name
-                if obj.name != name:  # Blender appends .001 etc. for duplicate names
+                if obj.name != name:
                     print(f"Warning: Requested name '{name}' was modified to '{obj.name}' to ensure uniqueness")
             
             obj.rotation_euler = rotation
@@ -431,29 +416,24 @@ class BlenderGPTCommands:
             
             print(f"Object configured: name={obj.name}, rotation={obj.rotation_euler}, scale={obj.scale}")
 
-            # Create and apply material
             mat = bpy.data.materials.new(name=f"{obj.name}_material")
             mat.use_nodes = True
             
-            # Get the principled BSDF node
             principled = next((n for n in mat.node_tree.nodes if n.type == 'BSDF_PRINCIPLED'), None)
             if principled:
-                # Set material properties
                 if color and len(color) == 3:
-                    principled.inputs["Base Color"].default_value = (*color, 1.0)  # RGB + Alpha
+                    principled.inputs["Base Color"].default_value = (*color, 1.0)
                 else:
                     principled.inputs["Base Color"].default_value = (0.8, 0.8, 0.8, 1.0)
                 principled.inputs["Metallic"].default_value = 0.0
                 principled.inputs["Roughness"].default_value = 0.5
             
-            # Assign material to object
             if obj.data.materials:
                 obj.data.materials[0] = mat
             else:
                 obj.data.materials.append(mat)
             print(f"Applied material to {obj.name} with color: {color if color else 'default'}")
 
-            # Update the view layer to ensure the object is visible
             bpy.context.view_layer.update()
             
             return {"status": "success", "name": obj.name}
@@ -506,33 +486,24 @@ class BlenderGPTCommands:
 
     @staticmethod
     def create_composite_object(obj_type, name=None, location=(0,0,0), variations=None):
-        """
-        Create complex composite objects using the COMPOSITE_OBJECTS dictionary
-        """
         try:
             obj_type = obj_type.upper()
             if obj_type not in COMPOSITE_OBJECTS:
                 return {"status": "error", "message": f"Unknown composite object type: {obj_type}"}
             
-            # Generate base name if none provided
             base_name = name or f"{obj_type}_{random.randint(0,999)}"
             created_objects = []
             
-            # Get object definition
             obj_def = COMPOSITE_OBJECTS[obj_type]
             
-            # Apply global variations if provided
             variation_scales = variations or obj_def.get("variations", {})
             
-            # Create each component
             for comp in obj_def["components"]:
-                # Handle multiple instances of the same component
                 count = 1
                 if "count" in comp:
                     count = random.randint(comp["count"][0], comp["count"][1])
                 
                 for i in range(count):
-                    # Calculate component position
                     pos_var = comp.get("position_variance", (0, 0, 0))
                     base_pos = comp.get("position", (0, 0, 0))
                     comp_loc = (
@@ -541,7 +512,6 @@ class BlenderGPTCommands:
                         location[2] + base_pos[2] + random.uniform(-pos_var[2], pos_var[2])
                     )
                     
-                    # Calculate scale with variations
                     base_scale = comp["base_scale"]
                     scale_var = variation_scales.get(f"{comp['name']}_scale", 0.2)
                     comp_scale = tuple(
@@ -549,7 +519,6 @@ class BlenderGPTCommands:
                         for s in base_scale
                     )
                     
-                    # Create the component
                     obj_result = BlenderGPTCommands.create_object(
                         comp["type"],
                         f"{base_name}_{comp['name']}_{i}",
@@ -560,7 +529,6 @@ class BlenderGPTCommands:
                     if obj_result["status"] == "success":
                         created_objects.append(obj_result)
                         
-                        # Apply material
                         mat_def = comp["material"]
                         if "color_options" in mat_def:
                             color = random.choice(mat_def["color_options"])
@@ -579,11 +547,9 @@ class BlenderGPTCommands:
         except Exception as e:
             return {"status": "error", "message": f"Error creating {obj_type}: {str(e)}"}
 
-
 class CommandValidationError(Exception):
     """Custom exception for command validation errors."""
     pass
-
 
 def validate_command(cmd: dict) -> bool:
     """Validate command structure and parameters."""
@@ -596,7 +562,6 @@ def validate_command(cmd: dict) -> bool:
     cmd_name = cmd["command"]
     cmd_params = {k: v for k, v in cmd.items() if k != "command"}
 
-    # Validate specific command types
     if cmd_name == "create_object":
         if "type" not in cmd_params:
             raise CommandValidationError("create_object requires a 'type' parameter")
@@ -627,236 +592,84 @@ def validate_command(cmd: dict) -> bool:
     return True
 
 
-# Command Generation
-def generate_blender_commands(prompt: str, api_key: str, model: str, scene_info=None, last_result=None,
-                              messages=None) -> dict:
+def generate_blender_commands(prompt: str, api_key: str, model: str, scene_info: Dict, chat_history=None) -> Dict:
+    """Generate a Blender script via OpenAI API."""
+    if not api_key:
+        raise ValueError("No API key configured")
+
+    chat_history_str = "\n".join([f"{msg.role}: {msg.msg_content}" for msg in chat_history]) if chat_history else ""
+
+    system_prompt = (
+        "You are a Blender Python API expert. Generate a safe, efficient Python script using bpy based on the user's prompt.\n"
+        "Use randomization for realism (e.g., positions, scales). Avoid dangerous commands like os.system or eval.\n"
+        f"Current scene: {json.dumps(scene_info, indent=2)}\n"
+        f"Chat history: {chat_history_str}\n"
+        "Return in JSON: {\"script\": \"<script>\", \"description\": \"<desc>\", \"follow_up\": \"<question>\"}\n"
+        "No markdown wrappers."
+    )
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": prompt}
+    ]
+
     try:
-        print("\n=== Starting Command Generation ===")
-        print(f"Prompt: {prompt}")
-        print(f"Scene info: {json.dumps(scene_info, indent=2)}")
-
-        # Special case for delete everything
-        if prompt.lower().strip() in ["delete everything", "delete all", "clear scene", "remove everything", "remove all"]:
-            print("Using special case for delete everything command")
-            return {
-                "explanation": "Deleting all objects from the scene",
-                "commands": [
-                    {"command": "delete_object", "name": "everything"}
-                ]
-            }
-
-        if not rate_limiter.can_make_request():
-            return {"error": "Rate limit exceeded. Please wait before making more requests."}
-
-        rate_limiter.add_request()
-
-        api_key = api_key.strip()
-        api_key = ''.join(char for char in api_key if ord(char) < 128 and char.isprintable())
-
-        if not api_key:
-            raise ValueError("No API key provided. Please set it in config.json.")
-
         client = openai.Client(api_key=api_key)
-
-        if messages is None:
-            messages = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are BlenderGPT, a command generation system for Blender. Your task is to generate precise commands based on user prompts.\n\n"
-                        "IMPORTANT: You MUST generate valid commands for EVERY request. Do not explain or discuss - just generate the commands.\n\n"
-                        "Available Commands:\n"
-                        "1. Basic Commands:\n"
-                        "- create_object: Creates a basic 3D object\n"
-                        "  Required: 'type': 'CUBE'|'SPHERE'|'CONE'|'CYLINDER'|'PLANE'\n"
-                        "  Optional: 'name': str, 'location': [x,y,z], 'rotation': [x,y,z], 'scale': [x,y,z], 'color': [r,g,b]\n"
-                        "  Example: {'command': 'create_object', 'type': 'CUBE', 'name': 'RedCube', 'location': [0,0,0], 'color': [1,0,0]}\n\n"
-                        "- delete_object: Deletes an object from the scene\n"
-                        "  Required: 'name': str (name of object to delete)\n"
-                        "  Example: {'command': 'delete_object', 'name': 'Cube'}\n\n"
-                        "- set_material: Sets material properties for an object\n"
-                        "  Required: 'obj_name': str\n"
-                        "  Optional: 'color': [r,g,b], 'metallic': float, 'roughness': float\n"
-                        "  Example: {'command': 'set_material', 'obj_name': 'RedCube', 'color': [1,0,0]}\n\n"
-                        "Output format MUST be:\n"
-                        "{\n"
-                        "  'explanation': 'Brief description of what you're creating',\n"
-                        "  'commands': [list of command dictionaries]\n"
-                        "}\n\n"
-                        "Example for 'delete everything':\n"
-                        "{\n"
-                        "  'explanation': 'Deleting all objects from the scene',\n"
-                        "  'commands': [\n"
-                        "    {'command': 'delete_object', 'name': 'Cube'},\n"
-                        "    {'command': 'delete_object', 'name': 'Light'},\n"
-                        "    {'command': 'delete_object', 'name': 'Camera'}\n"
-                        "  ]\n"
-                        "}\n\n"
-                        "ALWAYS generate commands - no discussion or suggestions."
-                    )
-                }
-            ]
-            if scene_info:
-                messages.append({"role": "system", "content": f"Current scene: {json.dumps(scene_info, indent=2)}"})
-            if last_result:
-                messages.append({"role": "system", "content": f"Last result: {json.dumps(last_result, indent=2)}"})
-            messages.append({"role": "user", "content": prompt})
-
         response = client.chat.completions.create(
             model=model,
-            messages=[{"role": m["role"], "content": m["content"]} for m in messages],
-            max_tokens=8000,
+            messages=messages,
+            max_tokens=2000,
             temperature=0.7,
+            timeout=15
         )
-        raw_content = response.choices[0].message.content
 
-        # Parse the response as JSON
-        try:
-            print(f"Raw response content: {raw_content}")
-            # First try to parse as regular JSON
-            try:
-                parsed_response = json.loads(raw_content)
-            except json.JSONDecodeError:
-                # If that fails, try to evaluate as Python literal (handles single quotes)
-                try:
-                    parsed_response = ast.literal_eval(raw_content)
-                except (ValueError, SyntaxError) as e:
-                    print(f"Failed to parse response as Python literal: {e}")
-                    return {
-                        "explanation": "Failed to parse response",
-                        "commands": []
-                    }
-            
-            # Validate the parsed response
-            if not isinstance(parsed_response, dict):
-                print(f"Response is not a dictionary: {parsed_response}")
-                return {
-                    "explanation": "Invalid response format",
-                    "commands": []
-                }
-            
-            if "explanation" not in parsed_response or "commands" not in parsed_response:
-                print(f"Response missing required keys: {parsed_response}")
-                return {
-                    "explanation": raw_content,
-                    "commands": []
-                }
-            
-            # Ensure commands is a list
-            if not isinstance(parsed_response["commands"], list):
-                print(f"Commands is not a list: {parsed_response['commands']}")
-                parsed_response["commands"] = []
-            
-            print(f"Successfully parsed response: {json.dumps(parsed_response, indent=2)}")
-            return parsed_response
-            
-        except Exception as e:
-            print(f"Error parsing response: {e}\n{traceback.format_exc()}")
-            return {
-                "explanation": raw_content,
-                "commands": []
-            }
+        response_content = response.choices[0].message.content.strip()
+        if response_content.startswith("```json"):
+            response_content = response_content[7:-3].strip()
 
-    except openai.AuthenticationError as auth_error:
-        print(f"Authentication Error: {auth_error}")
-        return {"error": f"Authentication failed: {str(auth_error)}. Please check your API key."}
-
-    except openai.APIError as api_error:
-        print(f"API Error: {api_error}")
-        return {"error": f"API error: {str(api_error)}"}
-
-    except Exception as e:
-        print(f"Error generating commands: {str(e)}")
-        return {"error": f"Error generating commands: {str(e)}"}
-
-
-# Execution
-def execute_generated_commands(commands: dict) -> dict:
-    try:
-        print("\n=== Starting Command Execution ===")
-        print(f"Input commands: {json.dumps(commands, indent=2)}")
-        
-        # Push undo state
-        bpy.ops.ed.undo_push(message="Before blender_gpt execution")
-        result = {"status": "success", "details": []}
-
-        if not isinstance(commands, dict):
-            error_msg = f"Invalid commands format: expected dict, got {type(commands)}"
-            print(error_msg)
-            return {"status": "error", "message": error_msg}
-
-        if "commands" not in commands:
-            error_msg = "No 'commands' key found in input"
-            print(error_msg)
-            return {"status": "error", "message": error_msg}
-
-        if not isinstance(commands["commands"], list):
-            error_msg = f"Invalid commands format: expected list, got {type(commands['commands'])}"
-            print(error_msg)
-            return {"status": "error", "message": error_msg}
-
-        total_commands = len(commands["commands"])
-        print(f"Total commands to execute: {total_commands}")
-        
-        for i, cmd in enumerate(commands["commands"], 1):
-            try:
-                print(f"\n--- Executing command {i}/{total_commands} ---")
-                print(f"Command data: {json.dumps(cmd, indent=2)}")
-
-                # Validate command before execution
-                print("Validating command...")
-                validate_command(cmd)
-
-                cmd_name = cmd["command"]
-                cmd_params = {k: v for k, v in cmd.items() if k != "command"}
-                print(f"Command name: {cmd_name}")
-                print(f"Command parameters: {json.dumps(cmd_params, indent=2)}")
-
-                # Execute command
-                print(f"Executing {cmd_name}...")
-                if cmd_name == "create_object":
-                    if "type" in cmd_params:
-                        cmd_params["obj_type"] = cmd_params.pop("type")
-                    res = BlenderGPTCommands.create_object(**cmd_params)
-                elif cmd_name == "set_material":
-                    res = BlenderGPTCommands.set_material(**cmd_params)
-                elif cmd_name == "modify_object":
-                    res = BlenderGPTCommands.modify_object(**cmd_params)
-                elif cmd_name == "delete_object":
-                    res = BlenderGPTCommands.delete_object(**cmd_params)
-                elif cmd_name == "create_composite_object":
-                    res = BlenderGPTCommands.create_composite_object(**cmd_params)
-                else:
-                    error_msg = f"Unknown command: {cmd_name}"
-                    print(error_msg)
-                    res = {"status": "error", "message": error_msg}
-
-                print(f"Command result: {json.dumps(res, indent=2)}")
-                result["details"].append(res)
-
-                # Update the view layer after each command
-                bpy.context.view_layer.update()
-
-            except CommandValidationError as e:
-                error_msg = f"Command validation error: {str(e)}"
-                print(error_msg)
-                result["details"].append({"status": "error", "message": error_msg})
-            except Exception as e:
-                error_msg = f"Error executing command: {str(e)}\n{traceback.format_exc()}"
-                print(error_msg)
-                result["details"].append({"status": "error", "message": error_msg})
-
-        print("\nUpdating view layer and pushing undo state...")
-        bpy.context.view_layer.update()
-        bpy.ops.ed.undo_push(message="After blender_gpt execution")
-        print("=== Command Execution Complete ===\n")
+        result = json.loads(response_content)
+        if not all(key in result for key in ["script", "description", "follow_up"]):
+            raise ValueError("Missing required fields in API response")
         return result
 
     except Exception as e:
-        error_msg = f"Fatal error in execute_generated_commands: {str(e)}\n{traceback.format_exc()}"
-        print(error_msg)
-        return {"status": "error", "message": error_msg}
+        return {
+            "script": "",
+            "description": f"Error: {str(e)}\nRaw response: {response_content if 'response_content' in locals() else 'N/A'}",
+            "follow_up": "Something went wrong. Try rephrasing your prompt or check your API key."
+        }
+def execute_blender_code(script):
+    """
+    Safely execute a Blender Python script.
+    Returns a dictionary with the result or error message.
+    """
+    if not script:
+        return {"status": "error", "message": "No script provided."}
 
+    dangerous_keywords = ["__import__", "eval", "exec", "os.", "sys.", "subprocess", "shutil", "open("]
+    for keyword in dangerous_keywords:
+        if keyword in script:
+            return {"status": "error", "message": f"Script contains unsafe keyword: {keyword}"}
+
+    start_time = time.time()
+    timeout = 10
+
+    old_stdout = sys.stdout
+    old_stderr = sys.stderr
+    sys.stdout = sys.stderr = output = StringIO()
+
+    try:
+        exec(script, {"bpy": bpy, "random": random, "math": math})
+        if time.time() - start_time > timeout:
+            return {"status": "error", "message": "Script execution timed out."}
+        return {"status": "success", "message": "Code executed successfully.", "output": output.getvalue()}
+    except Exception as e:
+        error_msg = f"Error executing script: {str(e)}\n{traceback.format_exc()}"
+        return {"status": "error", "message": error_msg, "output": output.getvalue()}
+    finally:
+        sys.stdout = old_stdout
+        sys.stderr = old_stderr
+        output.close()
 
 # Preferences
 class BlenderGPTAddonPreferences(bpy.types.AddonPreferences):
@@ -870,117 +683,7 @@ class BlenderGPTAddonPreferences(bpy.types.AddonPreferences):
 
     def draw(self, context):
         layout = self.layout
-        scene = context.scene
-        gpt_props = scene.blendergpt_props
-
-        # API Key Section
-        box = layout.box()
-        box.label(text="API Key Status:", icon='CHECKMARK')
-        if api_key:
-            box.label(text="✓ API Key Configured", icon='CHECKMARK')
-        else:
-            box.label(text="⚠ No API Key Found", icon='ERROR')
-            box.label(text="Using config.json in addon directory", icon='FILE_TEXT')
-            box.operator("blendergpt.configure_api_key", text="Load API Key")
-
-        # Prompt Section
-        box = layout.box()
-        box.label(text="Generate Scene:", icon='MESH_DATA')
-        box.prop(scene, "blender_gpt_prompt", text="Prompt")
-        row = box.row()
-        row.operator("blender_gpt.generate_code", text="Generate")
-        row.operator("blender_gpt.execute_code", text="Execute")
-
-        # Generated Commands
-        box = layout.box()
-        box.label(text="Generated Commands:", icon='TEXT')
-        if scene.blender_gpt_generated_code:
-            try:
-                cmd_data = json.loads(scene.blender_gpt_generated_code)
-                if "explanation" in cmd_data:
-                    box.label(text=cmd_data["explanation"])
-
-                # Add text editor for commands with proper styling
-                if "commands" in cmd_data and cmd_data["commands"]:
-                    commands_text = json.dumps(cmd_data["commands"], indent=2)
-                    text_box = box.box()
-                    text_box.scale_y = 3.0  # Make the text area taller
-                    col = text_box.column()
-                    col.scale_y = 0.6  # Adjust text scaling
-                    col.prop(scene, "blender_gpt_generated_code", text="", icon='TEXT')
-                    
-                    # Add Copy and Clear buttons in a row
-                    row = box.row(align=True)
-                    row.operator("blendergpt.copy_commands", text="Copy", icon='COPYDOWN')
-                    row.operator("blendergpt.clear_commands", text="Clear", icon='X')
-            except json.JSONDecodeError:
-                box.label(text="Error parsing commands", icon='ERROR')
-        else:
-            box.label(text="No commands generated yet")
-
-        # Execution Result
-        box = layout.box()
-        box.label(text="Result:", icon='INFO')
-        if scene.blender_gpt_execution_result:
-            try:
-                result_data = json.loads(scene.blender_gpt_execution_result)
-                if result_data["status"] == "success":
-                    box.label(text="✓ Success!", icon='CHECKMARK')
-                    if "details" in result_data:
-                        for detail in result_data["details"]:
-                            if detail["status"] == "success":
-                                box.label(text=f"• {detail.get('name', 'Operation')} created", icon='DOT')
-                            else:
-                                box.label(text=f"⚠ {detail.get('message', 'Unknown error')}", icon='ERROR')
-                else:
-                    box.label(text=f"⚠ Error: {result_data.get('message', 'Unknown error')}", icon='ERROR')
-                
-                # Add Copy button for results
-                row = box.row(align=True)
-                row.operator("blendergpt.copy_results", text="Copy Results", icon='COPYDOWN')
-            except json.JSONDecodeError:
-                box.label(text=scene.blender_gpt_execution_result)
-        else:
-            box.label(text="No results yet")
-
-        # Chat Section
-        box = layout.box()
-        box.label(text="Chat with BlenderGPT:", icon='TEXT')
-        for msg in gpt_props.chat_history:
-            msg_box = box.box()
-            row = msg_box.row()
-            col = row.column()
-            display_role = msg.role if msg.role in ["DREAMER", "USER"] else "Assistant"
-            col.label(text=f"{display_role}:", icon='USER' if msg.role == 'USER' else 'TEXT')
-
-            # Split message content into multiple lines if needed
-            msg_content = msg.msg_content
-            words = msg_content.split()
-            lines = []
-            current_line = []
-
-            for word in words:
-                current_line.append(word)
-                if len(" ".join(current_line)) > 50:  # Max 50 characters per line
-                    lines.append(" ".join(current_line[:-1]))
-                    current_line = [word]
-            if current_line:
-                lines.append(" ".join(current_line))
-
-            col = row.column()
-            for line in lines:
-                col.label(text=line)
-        box.prop(gpt_props, "chat_input", text="Message")
-        row = box.row()
-        row.operator("blendergpt.send_message", text="Send")
-        row.operator("blendergpt.clear_history", text="Clear")
-        row.operator("blendergpt.copy_chat", text="Copy Chat", icon='COPYDOWN')
-
-        # Mode Toggle (moved to bottom)
-        box = layout.box()
-        box.label(text="Mode:", icon='MODIFIER')
-        box.prop(gpt_props, "mode", expand=True)
-
+        layout.prop(self, "gpt_model")
 
 class BLENDER_GPT_OT_ConfigureAPIKey(bpy.types.Operator):
     bl_idname = "blendergpt.configure_api_key"
@@ -999,7 +702,6 @@ class BLENDER_GPT_OT_ConfigureAPIKey(bpy.types.Operator):
     )
 
     def invoke(self, context, event):
-        # First try to load from config.json
         addon_dir = os.path.dirname(os.path.realpath(__file__))
         config_path = os.path.join(addon_dir, "config.json")
         
@@ -1016,12 +718,10 @@ class BLENDER_GPT_OT_ConfigureAPIKey(bpy.types.Operator):
             except Exception as e:
                 self.report({'WARNING'}, f"Could not load config.json: {str(e)}")
         
-        # If config.json doesn't exist or is invalid, use file selector
         context.window_manager.fileselect_add(self)
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        # This is only called when using file selector
         try:
             with open(self.filepath, 'r') as f:
                 if self.filepath.endswith('.json'):
@@ -1047,42 +747,51 @@ class BLENDER_GPT_OT_ConfigureAPIKey(bpy.types.Operator):
 class BLENDER_GPT_OT_GenerateCode(bpy.types.Operator):
     bl_idname = "blender_gpt.generate_code"
     bl_label = "Generate Code"
-    bl_description = "Generate Blender commands from prompt"
 
     def execute(self, context):
+        """Generate a Blender Python script based on the user's prompt."""
         print("\n=== Starting Command Generation ===")
-        prefs = context.preferences.addons["addon_blender_gpt"].preferences
-        model = prefs.gpt_model
-        print(f"Using model: {model}")
-
-        if not api_key:
-            self.report({'ERROR'}, "No API key found. Please configure it first.")
+        prompt = context.scene.blender_gpt_prompt.strip()
+        if not prompt:
+            print("No prompt provided")
+            self.report({'WARNING'}, "Please enter a prompt.")
             return {'CANCELLED'}
 
-        prompt = context.scene.blender_gpt_prompt
-        if not prompt.strip():
-            self.report({'WARNING'}, "Please enter a prompt first")
-            return {'CANCELLED'}
+        scene = context.scene
+        gpt_props = scene.blendergpt_props
+        scene_info = get_scene_info()  # Assumes this function exists to get current scene data
 
-        print(f"Generating commands for prompt: {prompt}")
-        scene_info = get_scene_info()
-        print(f"Current scene info: {json.dumps(scene_info, indent=2)}")
-        
-        commands = generate_blender_commands(prompt, api_key, model, scene_info)
-        print(f"Generated commands: {json.dumps(commands, indent=2)}")
+        try:
+            print(f"Generating commands for prompt: '{prompt}'")
+            # Call the helper function to generate commands via API
+            result = generate_blender_commands(
+                prompt,
+                api_key,  # Assumes api_key is defined globally or passed appropriately
+                context.preferences.addons["addon_blender_gpt"].preferences.gpt_model,
+                scene_info,
+                gpt_props.chat_history
+            )
+            print(f"Generation result: {result}")
 
-        if "error" in commands:
-            print(f"Error in command generation: {commands['error']}")
-            context.scene.blender_gpt_generated_code = json.dumps({"explanation": f"Error: {commands['error']}"})
-            self.report({'ERROR'}, commands['error'])
-            return {'CANCELLED'}
+            if result["script"]:
+                # Store the generated script and update UI
+                context.scene.blender_gpt_generated_code = result["script"]
+                context.scene.blender_gpt_execution_result = "Commands generated successfully. Click 'Execute' to run the script."
+                self.report({'INFO'}, "Commands generated successfully")
+            else:
+                # Handle case where no script is generated
+                context.scene.blender_gpt_generated_code = ""
+                context.scene.blender_gpt_execution_result = result["description"]
+                self.report({'WARNING'}, "Failed to generate commands")
 
-        context.scene.blender_gpt_generated_code = json.dumps(commands)
-        context.scene.blender_gpt_execution_result = ""
+        except Exception as e:
+            error_msg = f"Error generating commands: {str(e)}\n{traceback.format_exc()}"
+            print(f"Generation error: {error_msg}")
+            context.scene.blender_gpt_execution_result = f"Error: {str(e)}"
+            self.report({'ERROR'}, "Failed to generate commands")
+
         print("=== Command Generation Complete ===\n")
-        self.report({'INFO'}, "Commands generated successfully")
         return {'FINISHED'}
-
 
 class BLENDER_GPT_OT_ExecuteCode(bpy.types.Operator):
     bl_idname = "blender_gpt.execute_code"
@@ -1096,113 +805,64 @@ class BLENDER_GPT_OT_ExecuteCode(bpy.types.Operator):
             self.report({'WARNING'}, "No commands to execute.")
             return {'CANCELLED'}
 
-        try:
-            print(f"Parsing commands from: {code}")
-            commands = json.loads(code)
-            print(f"Parsed commands structure: {json.dumps(commands, indent=2)}")
-            
-            result = execute_generated_commands(commands)
-            print(f"Execution result: {json.dumps(result, indent=2)}")
+        scene = context.scene
+        gpt_props = scene.blendergpt_props
 
-            context.scene.blender_gpt_execution_result = json.dumps(result)
-            if result["status"] == "error":
-                print(f"Execution error: {result['message']}")
-                self.report({'ERROR'}, result["message"])
+        try:
+            print(f"Executing script:\n{code}")
+            exec_result = execute_blender_code(code)
+            print(f"Execution result: {exec_result}")
+
+            if exec_result["status"] == "success":
+                # Store the script in the chat history for future modifications
+                gpt_props.chat_history.add().from_json({
+                    "role": "assistant",
+                    "msg_content": "Script executed successfully."
+                })
+                # Store the script in a scene property for follow-up modifications
+                context.scene.blender_gpt_last_script = code
+                context.scene.blender_gpt_execution_result = "Code executed successfully."
+                self.report({'INFO'}, "Script executed successfully")
             else:
-                print("Execution completed successfully")
-                # Check if any objects were affected
-                if result.get("details"):
-                    success_count = sum(1 for detail in result["details"] if detail.get("status") == "success")
-                    if success_count > 0:
-                        # Check if this was a deletion operation
-                        is_deletion = any(cmd.get("command") == "delete_object" for cmd in commands.get("commands", []))
-                        if is_deletion:
-                            self.report({'INFO'}, f"Successfully deleted {success_count} objects.")
-                        else:
-                            self.report({'INFO'}, f"Successfully created {success_count} objects.")
+                error_msg = exec_result["message"]
+                if "name 'math' is not defined" in error_msg:
+                    fixed_script = "import math\n" + code
+                    exec_result = execute_blender_code(fixed_script)
+                    if exec_result["status"] == "success":
+                        gpt_props.chat_history.add().from_json({
+                            "role": "assistant",
+                            "msg_content": "Fixed an error (missing math import) and executed the script."
+                        })
+                        context.scene.blender_gpt_last_script = fixed_script
+                        context.scene.blender_gpt_execution_result = "Code executed successfully after fixing."
+                        self.report({'INFO'}, "Script executed successfully after fixing an error")
                     else:
-                        self.report({'WARNING'}, "Commands executed but no objects were affected.")
+                        gpt_props.chat_history.add().from_json({
+                            "role": "assistant",
+                            "msg_content": f"Failed to execute script even after fixing: {exec_result['message']}\nOutput: {exec_result['output']}"
+                        })
+                        context.scene.blender_gpt_execution_result = f"Error: {exec_result['message']}"
+                        self.report({'ERROR'}, "Failed to execute script even after fixing")
                 else:
-                    self.report({'WARNING'}, "Commands executed but no results were returned.")
-        except json.JSONDecodeError as e:
-            error_msg = f"Failed to parse commands: {str(e)}"
-            print(error_msg)
-            context.scene.blender_gpt_execution_result = json.dumps(
-                {"status": "error", "message": error_msg})
-            self.report({'ERROR'}, error_msg)
+                    gpt_props.chat_history.add().from_json({
+                        "role": "assistant",
+                        "msg_content": f"Failed to execute script: {error_msg}\nOutput: {exec_result['output']}"
+                    })
+                    context.scene.blender_gpt_execution_result = f"Error: {error_msg}"
+                    self.report({'ERROR'}, "Failed to execute script")
+
         except Exception as e:
-            error_msg = f"Execution failed: {str(e)}\n{traceback.format_exc()}"
-            print(error_msg)
-            context.scene.blender_gpt_execution_result = json.dumps(
-                {"status": "error", "message": error_msg})
-            self.report({'ERROR'}, f"Execution failed: {str(e)}")
-        
+            error_msg = f"Error executing script: {str(e)}\n{traceback.format_exc()}"
+            print(f"Execution error: {error_msg}")
+            gpt_props.chat_history.add().from_json({
+                "role": "assistant",
+                "msg_content": error_msg
+            })
+            context.scene.blender_gpt_execution_result = f"Error: {error_msg}"
+            self.report({'ERROR'}, "Failed to execute script")
+
         print("=== Command Execution Complete ===\n")
         return {'FINISHED'}
-
-
-def technical_distill(insights: Dict, prompt: str) -> str:
-    """Translate dream insights into technical scene elements"""
-    # Extract key elements from prompt
-    prompt_words = prompt.lower().split()
-    
-    # Map emotional qualities to technical parameters
-    emotional_map = {
-        "wonder": {"scale": 1.2, "brightness": 1.1},
-        "euphoria": {"color_intensity": 1.3, "glow_strength": 1.2}, 
-        "serenity": {"smoothness": 0.8, "transparency": 0.2},
-        "turbulent": {"roughness": 0.7, "displacement": 0.5},
-        "passion": { "vibrance": 1.4,   "pulse_strength": 0.7}  # Adds sexy horniness
-    }
-    
-    # Map conceptual forms to technical shapes
-    form_map = {
-        "crystalline": "ICO_SPHERE",
-        "organic": "SPHERE",
-        "geometric": "CUBE",
-        "fluid": "SPHERE",
-        "rigid": "CUBE",
-        "amorphous": "SPHERE"
-    }
-    
-    # Map aesthetic qualities to material properties
-    aesthetic_map = {
-        "smooth": {"roughness": 0.2, "metallic": 0.1},
-        "rough": {"roughness": 0.8, "metallic": 0.0},
-        "crystalline": {"roughness": 0.3, "metallic": 0.2, "transparency": 0.5},
-        "metallic": {"roughness": 0.4, "metallic": 0.8}
-    }
-    
-    # Generate technical response
-    technical_response = "🎬 Technical Scene Breakdown:\n\n"
-    
-    # Main object based on prompt
-    main_object = prompt_words[0] if prompt_words else "object"
-    technical_response += f"Primary Object: {main_object}\n"
-    
-    # Form and structure
-    form = insights["conceptual"]["form"]
-    technical_response += f"Base Form: {form_map.get(form, 'SPHERE')}\n"
-    
-    # Material properties
-    texture = insights["aesthetic"]["texture"]
-    material_props = aesthetic_map.get(texture, {"roughness": 0.5, "metallic": 0.0})
-    technical_response += f"Material Properties:\n"
-    technical_response += f"• Roughness: {material_props['roughness']:.2f}\n"
-    technical_response += f"• Metallic: {material_props['metallic']:.2f}\n"
-    
-    # Lighting setup
-    lighting = insights["energetic"]["flow"]
-    technical_response += f"Lighting: {lighting.title()}\n"
-    
-    # Special effects based on cosmic insights
-    if insights["cosmic"]["reality"] == "fractured":
-        technical_response += "Effects: Fractured Reality (Displacement + Transparency)\n"
-    
-    # Camera and composition
-    technical_response += f"Camera: {insights['narrative']['pace'].title()} Movement\n"
-    
-    return technical_response
 
 
 class BLENDERGPT_OT_SendMessage(bpy.types.Operator):
@@ -1210,163 +870,75 @@ class BLENDERGPT_OT_SendMessage(bpy.types.Operator):
     bl_label = "Send Message"
 
     def execute(self, context):
+        """Process chat input based on mode (Assistant or Dreamer)."""
         scene = context.scene
         gpt_props = scene.blendergpt_props
-        prompt = gpt_props.chat_input
-        scene_info = get_scene_info()
+        prompt = gpt_props.chat_input.strip()
+        scene_info = get_scene_info()  # Assumes this exists
 
         # Add user's message to chat history
         gpt_props.chat_history.add().from_json({"role": "USER", "msg_content": prompt})
 
         try:
             if gpt_props.mode == 'DREAMER':
-                # Use Dreamer mode
-                try:
-                    # Import Dreamer from local module
-                    from .dreamer.core import Dreamer
-                    dreamer_instance = Dreamer()
-                    result = dreamer_instance.process_request(prompt)
-                    
-                    # Format the response nicely for display
-                    display_response = "✨ Dream Insights ✨\n\n"
-                    
-                    # Emotional insights
-                    display_response += f"💫 Emotional Essence:\n"
-                    display_response += f"• Primary: {result['insights']['emotional']['primary']}\n"
-                    display_response += f"• Secondary: {result['insights']['emotional']['secondary']}\n"
-                    display_response += f"• Intensity: {result['insights']['emotional']['intensity']:.2f}\n\n"
-                    
-                    # Energetic insights
-                    display_response += f"⚡ Energetic Flow:\n"
-                    display_response += f"• Flow: {result['insights']['energetic']['flow']}\n"
-                    display_response += f"• Frequency: {result['insights']['energetic']['frequency']}\n"
-                    display_response += f"• Quality: {result['insights']['energetic']['quality']}\n\n"
-                    
-                    # Conceptual insights
-                    display_response += f"🌌 Conceptual Realm:\n"
-                    display_response += f"• Form: {result['insights']['conceptual']['form']}\n"
-                    display_response += f"• Setting: {result['insights']['conceptual']['setting']}\n"
-                    display_response += f"• Essence: {result['insights']['conceptual']['essence']}\n\n"
-                    
-                    # Aesthetic insights
-                    display_response += f"🎨 Aesthetic Vision:\n"
-                    display_response += f"• Beauty: {result['insights']['aesthetic']['beauty']}\n"
-                    display_response += f"• Color: {result['insights']['aesthetic']['color']}\n"
-                    display_response += f"• Texture: {result['insights']['aesthetic']['texture']}\n\n"
-                    
-                    # Narrative insights
-                    display_response += f"📖 Narrative Thread:\n"
-                    display_response += f"• Tone: {result['insights']['narrative']['tone']}\n"
-                    display_response += f"• Pace: {result['insights']['narrative']['pace']}\n"
-                    display_response += f"• Mood: {result['insights']['narrative']['mood']}\n\n"
-                    
-                    # Cosmic insights
-                    display_response += f"🌠 Cosmic Perspective:\n"
-                    display_response += f"• Dimension: {result['insights']['cosmic']['dimension']}\n"
-                    display_response += f"• Reality: {result['insights']['cosmic']['reality']}\n"
-                    display_response += f"• Existence: {result['insights']['cosmic']['existence']}\n"
-                    
-                    # Add formatted response to chat history with DREAMER role
-                    gpt_props.chat_history.add().from_json({
-                        "role": "assistant",
-                        "msg_content": display_response
-                    })
-                    
-                    # Generate technical breakdown
-                    technical_response = technical_distill(result['insights'], prompt)
-                    gpt_props.chat_history.add().from_json({
-                        "role": "assistant",
-                        "msg_content": technical_response
-                    })
-                    
-                    # Create AI system prompt with Dreamer's insights
-                    messages = [
-                        {
-                            "role": "system",
-                            "content": (
-                                "You are a dream interpreter and scene creator. Your role is to:\n\n"
-                                "1. Understand the emotional and energetic essence of the dream\n"
-                                "2. Create scenes that reflect the cosmic and conceptual insights\n"
-                                "3. Balance the aesthetic and narrative elements\n\n"
-                                f"Current Dream Insights:\n"
-                                f"• Emotional: {result['insights']['emotional']}\n"
-                                f"• Energetic: {result['insights']['energetic']}\n"
-                                f"• Conceptual: {result['insights']['conceptual']}\n"
-                                f"• Aesthetic: {result['insights']['aesthetic']}\n"
-                                f"• Narrative: {result['insights']['narrative']}\n"
-                                f"• Cosmic: {result['insights']['cosmic']}\n\n"
-                                "Use these insights to create or modify the scene appropriately, "
-                                "focusing on the emotional and energetic qualities rather than technical details."
-                            )
-                        },
-                        {"role": "system", "content": f"Current scene: {json.dumps(scene_info, indent=2)}"}
-                    ]
-                    
-                    # Add chat history with proper role mapping
-                    for msg in gpt_props.chat_history:
-                        # Map DREAMER role to assistant for API compatibility
-                        role = "assistant" if msg.role == "DREAMER" else msg.role.lower()
-                        messages.append({"role": role, "content": msg.msg_content})
-                    
-                    # Get AI response
-                    client = openai.Client(api_key=api_key)
-                    response = client.chat.completions.create(
-                        model=context.preferences.addons["addon_blender_gpt"].preferences.gpt_model,
-                        messages=[{"role": m["role"], "content": m["content"]} for m in messages],
-                        max_tokens=8000,
-                        temperature=0.7,
-                    )
-                    
-                    # Add AI response to chat history
-                    assistant_message = response.choices[0].message.content
-                    gpt_props.chat_history.add().from_json({
-                        "role": "assistant",
-                        "msg_content": assistant_message
-                    })
-                    
-                except Exception as e:
-                    error_msg = f"Dreamer Error: {str(e)}\n{traceback.format_exc()}"
-                    print(f"Dreamer error: {error_msg}")
-                    gpt_props.chat_history.add().from_json({
-                        "role": "assistant",
-                        "msg_content": error_msg
-                    })
-            else:
-                # Regular Assistant mode
-                # This is the Assistant's system prompt
+                # Dreamer mode: Creative scene generation
+                dreamer_instance = Dreamer()
+                last_prompt = context.scene.blender_gpt_prompt if context.scene.blender_gpt_prompt else prompt
+                scene_vision = dreamer_instance.process_request(last_prompt)
+
+                print(f"Dreamer scene vision: {json.dumps(scene_vision, indent=2)}")
+
+                # Generate creative insights
+                insights = {
+                    "emotional": {"tone": random.choice(["serene", "euphoric", "mysterious", "chaotic"])},
+                    "energetic": {"flow": random.choice(["steady", "turbulent", "pulsing"])},
+                    "conceptual": {"form": random.choice(["organic", "geometric", "fluid"])},
+                    "aesthetic": {"texture": random.choice(["smooth", "rough", "crystalline"])},
+                    "narrative": {"pace": random.choice(["slow", "fast", "erratic"])},
+                    "cosmic": {"reality": random.choice(["whole", "fractured", "ethereal"])}
+                }
+
+                # Format the response
+                display_response = "✨ Dreamer Scene Interpretation ✨\n\n"
+                display_response += f"Emotional Tone: {insights['emotional']['tone'].title()}\n"
+                display_response += f"Energetic Flow: {insights['energetic']['flow'].title()}\n"
+                display_response += f"Conceptual Form: {insights['conceptual']['form'].title()}\n"
+                display_response += f"Aesthetic Texture: {insights['aesthetic']['texture'].title()}\n"
+                display_response += f"Narrative Pace: {insights['narrative']['pace'].title()}\n"
+                display_response += f"Cosmic Reality: {insights['cosmic']['reality'].title()}\n\n"
+                display_response += "Scene Breakdown:\n"
+                for obj in scene_vision["objects"]:
+                    display_response += f"Object: {obj['type']} (Count: {obj['count']})\n"
+                    for comp in obj["components"]:
+                        display_response += f"  - Component: {comp['name']} ({comp['primitive']}, Dimensions: {comp['dimensions']})\n"
+                    if obj["properties"]:
+                        display_response += f"  Properties: {obj['properties']}\n"
+                for rel in scene_vision["relationships"]:
+                    display_response += f"Relationship: {rel['type']} between {rel['objects']} (Max Distance: {rel['max_distance']})\n"
+                gpt_props.chat_history.add().from_json({
+                    "role": "DREAMER",
+                    "msg_content": display_response
+                })
+
+                # Generate and execute a script based on the vision
                 messages = [
                     {
                         "role": "system",
                         "content": (
-                            "You are a helpful 3D modeling assistant. Your role is to:\n\n"
-                            "1. For direct commands (create/delete/modify):\n"
-                            "   - Execute them immediately without questioning\n"
-                            "   - Explain what you're doing clearly\n"
-                            "   - Confirm when the action is complete\n\n"
-                            "2. For questions about the scene:\n"
-                            "   - Provide clear, technical explanations\n"
-                            "   - Suggest improvements when relevant\n\n"
-                            "3. For unclear requests:\n"
-                            "   - Ask for clarification\n"
-                            "   - Suggest specific options\n\n"
-                            "Be direct and efficient. Don't question clear deletion/modification commands."
+                            "You are a Blender Python API expert. Generate a Python script using bpy to create a scene based on the Dreamer's vision and insights.\n"
+                            "The script must be safe and use randomization for realism (e.g., positions, scales).\n"
+                            f"Dreamer Scene Vision:\n{json.dumps(scene_vision, indent=2)}\n"
+                            f"Dreamer Insights:\n{json.dumps(insights, indent=2)}\n"
+                            f"Current Scene Info:\n{json.dumps(scene_info, indent=2)}\n"
+                            "Return in JSON: {\"script\": \"<script>\", \"description\": \"<desc>\", \"follow_up\": \"<question>\"}\n"
+                            "No markdown wrappers like ```json."
                         )
-                    },
-                    {"role": "system", "content": f"Current scene: {json.dumps(scene_info, indent=2)}"}
+                    }
                 ]
 
                 for msg in gpt_props.chat_history:
-                    messages.append({"role": msg.role.lower(), "content": msg.msg_content})
-
-                # Check if this is a scene modification request
-                should_generate = any(keyword in prompt.lower() for keyword in [
-                    "create", "add", "make", "build", "put", "place", "set", "modify", 
-                    "change", "move", "rotate", "scale", "delete", "remove", "clear"
-                ])
-
-                # Get response from OpenAI
-                if not api_key:
-                    raise ValueError("No API key configured")
+                    role = "assistant" if msg.role == "DREAMER" else msg.role.lower()
+                    messages.append({"role": role, "content": msg.msg_content})
 
                 client = openai.Client(api_key=api_key)
                 response = client.chat.completions.create(
@@ -1374,37 +946,118 @@ class BLENDERGPT_OT_SendMessage(bpy.types.Operator):
                     messages=[{"role": m["role"], "content": m["content"]} for m in messages],
                     max_tokens=8000,
                     temperature=0.7,
+                    timeout=15
                 )
-                
-                # Get the assistant's response
-                assistant_message = response.choices[0].message.content
-                
-                # Add assistant's response to chat history
-                gpt_props.chat_history.add().from_json({
-                    "role": "assistant", 
-                    "msg_content": assistant_message
-                })
 
-                # If it's a modification request, try to generate and execute commands
+                response_content = response.choices[0].message.content.strip()
+                if response_content.startswith("```json"):
+                    response_content = response_content[7:-3].strip()
+
+                result = json.loads(response_content)
+                if result["script"]:
+                    exec_result = execute_blender_code(result["script"])
+                    if exec_result["status"] == "success":
+                        gpt_props.chat_history.add().from_json({
+                            "role": "DREAMER",
+                            "msg_content": f"{result['description']}\nCode executed successfully."
+                        })
+                    else:
+                        gpt_props.chat_history.add().from_json({
+                            "role": "DREAMER",
+                            "msg_content": f"Failed to execute script: {exec_result['message']}\nOutput: {exec_result['output']}"
+                        })
+                    gpt_props.chat_history.add().from_json({
+                        "role": "DREAMER",
+                        "msg_content": result["follow_up"]
+                    })
+
+            else:
+                # Assistant mode: Generate scripts for action prompts only
+                action_keywords = ["make", "generate", "add", "create", "modify", "scale", "material"]
+                should_generate = any(keyword in prompt.lower() for keyword in action_keywords)
+
                 if should_generate:
-                    commands = generate_blender_commands(prompt, api_key,
-                                                      context.preferences.addons["addon_blender_gpt"].preferences.gpt_model,
-                                                      scene_info)
-                    if "error" not in commands and commands.get("commands"):
-                        scene.blender_gpt_generated_code = json.dumps(commands)
-                        bpy.ops.blender_gpt.execute_code()
+                    result = generate_blender_commands(
+                        prompt,
+                        api_key,
+                        context.preferences.addons["addon_blender_gpt"].preferences.gpt_model,
+                        scene_info,
+                        gpt_props.chat_history
+                    )
+
+                    if result["script"]:
+                        try:
+                            exec_result = execute_blender_code(result["script"])
+                            if exec_result["status"] == "success":
+                                gpt_props.chat_history.add().from_json({
+                                    "role": "assistant",
+                                    "msg_content": f"{result['description']}\n{exec_result['message']}"
+                                })
+                                context.scene.blender_gpt_last_script = result["script"]
+                            else:
+                                gpt_props.chat_history.add().from_json({
+                                    "role": "assistant",
+                                    "msg_content": f"Failed to execute script: {exec_result['message']}\nOutput: {exec_result['output']}"
+                                })
+                            gpt_props.chat_history.add().from_json({
+                                "role": "assistant",
+                                "msg_content": result["follow_up"]
+                            })
+                        except Exception as e:
+                            error_msg = f"Failed to execute script: {str(e)}\n{traceback.format_exc()}"
+                            gpt_props.chat_history.add().from_json({
+                                "role": "assistant",
+                                "msg_content": error_msg
+                            })
+                    else:
+                        gpt_props.chat_history.add().from_json({
+                            "role": "assistant",
+                            "msg_content": result["description"]
+                        })
+                        gpt_props.chat_history.add().from_json({
+                            "role": "assistant",
+                            "msg_content": result["follow_up"]
+                        })
+                else:
+                    # Conversational response for non-action prompts
+                    messages = [
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a Blender scene assistant. Describe the scene or answer questions without generating scripts unless asked.\n"
+                                f"Current scene: {json.dumps(scene_info, indent=2)}\n"
+                                "Respond conversationally."
+                            )
+                        }
+                    ]
+                    for msg in gpt_props.chat_history:
+                        messages.append({"role": msg.role.lower(), "content": msg.msg_content})
+
+                    client = openai.Client(api_key=api_key)
+                    response = client.chat.completions.create(
+                        model=context.preferences.addons["addon_blender_gpt"].preferences.gpt_model,
+                        messages=messages,
+                        max_tokens=500,
+                        temperature=0.7,
+                        timeout=15
+                    )
+
+                    assistant_message = response.choices[0].message.content
+                    gpt_props.chat_history.add().from_json({
+                        "role": "assistant",
+                        "msg_content": assistant_message
+                    })
 
         except Exception as e:
-            error_msg = f"Error: {str(e)}"
+            error_msg = f"Error: {str(e)}\n{traceback.format_exc()}"
             print(f"Chat error: {error_msg}")
             gpt_props.chat_history.add().from_json({
                 "role": "assistant",
                 "msg_content": error_msg
             })
 
-        gpt_props.chat_input = ""
+        gpt_props.chat_input = ""  # Clear input field
         return {'FINISHED'}
-
 
 class BLENDERGPT_OT_ClearHistory(bpy.types.Operator):
     bl_idname = "blendergpt.clear_history"
@@ -1413,7 +1066,6 @@ class BLENDERGPT_OT_ClearHistory(bpy.types.Operator):
     def execute(self, context):
         context.scene.blendergpt_props.chat_history.clear()
         return {'FINISHED'}
-
 
 class BLENDERGPT_OT_CopyCommands(bpy.types.Operator):
     bl_idname = "blendergpt.copy_commands"
@@ -1428,7 +1080,6 @@ class BLENDERGPT_OT_CopyCommands(bpy.types.Operator):
             self.report({'ERROR'}, f"Failed to copy commands: {str(e)}")
         return {'FINISHED'}
 
-
 class BLENDERGPT_OT_ClearCommands(bpy.types.Operator):
     bl_idname = "blendergpt.clear_commands"
     bl_label = "Clear Commands"
@@ -1439,7 +1090,6 @@ class BLENDERGPT_OT_ClearCommands(bpy.types.Operator):
         context.scene.blender_gpt_execution_result = ""
         self.report({'INFO'}, "Commands cleared")
         return {'FINISHED'}
-
 
 class BLENDERGPT_OT_CopyResults(bpy.types.Operator):
     bl_idname = "blendergpt.copy_results"
@@ -1453,7 +1103,6 @@ class BLENDERGPT_OT_CopyResults(bpy.types.Operator):
         except Exception as e:
             self.report({'ERROR'}, f"Failed to copy results: {str(e)}")
         return {'FINISHED'}
-
 
 class BLENDERGPT_OT_CopyChat(bpy.types.Operator):
     bl_idname = "blendergpt.copy_chat"
@@ -1474,7 +1123,6 @@ class BLENDERGPT_OT_CopyChat(bpy.types.Operator):
             self.report({'ERROR'}, f"Failed to copy chat history: {str(e)}")
         return {'FINISHED'}
 
-
 # Load composite object definitions from JSON files
 def load_composite_objects():
     """Load all composite object definitions from JSON files"""
@@ -1486,13 +1134,11 @@ def load_composite_objects():
         print(f"Warning: composite_objects directory not found at {composite_dir}")
         return composite_objects
         
-    # Recursively find all JSON files
     json_files = glob.glob(os.path.join(composite_dir, "**/*.json"), recursive=True)
     
     for json_file in json_files:
         try:
             with open(json_file, 'r') as f:
-                # Load and merge definitions
                 definitions = json.load(f)
                 composite_objects.update(definitions)
                 print(f"Loaded composite objects from {json_file}")
@@ -1500,7 +1146,6 @@ def load_composite_objects():
             print(f"Error loading {json_file}: {e}")
             
     return composite_objects
-
 
 # Global dictionary to store composite object definitions
 COMPOSITE_OBJECTS = {}
@@ -1512,10 +1157,9 @@ try:
 except Exception as e:
     print(f"Error loading composite objects: {e}")
 
-
 # Registration
 classes = [
-    Message,  # Must be registered first since BlenderGPTChatProps depends on it
+    Message,
     BlenderGPTChatProps,
     BlenderGPTAddonPreferences,
     BLENDER_GPT_PT_Panel,
@@ -1527,23 +1171,19 @@ classes = [
     BLENDERGPT_OT_CopyCommands,
     BLENDERGPT_OT_ClearCommands,
     BLENDERGPT_OT_CopyResults,
-    BLENDERGPT_OT_CopyChat,  # Add the new operator to classes
+    BLENDERGPT_OT_CopyChat,
 ]
 
-
 def register():
-    # Create necessary directories if they don't exist
     addon_dir = os.path.dirname(os.path.realpath(__file__))
     composite_dir = os.path.join(addon_dir, "composite_objects")
     if not os.path.exists(composite_dir):
         os.makedirs(composite_dir, exist_ok=True)
         print(f"Created composite_objects directory at {composite_dir}")
 
-    # Register classes
     for cls in classes:
         bpy.utils.register_class(cls)
 
-    # Register properties
     bpy.types.Scene.blender_gpt_prompt = bpy.props.StringProperty(
         name="Prompt",
         description="Enter your scene description or command",
@@ -1559,21 +1199,22 @@ def register():
         description="Result of command execution",
         default=""
     )
-    # Register this last since it depends on Message class being registered
+    bpy.types.Scene.blender_gpt_last_script = bpy.props.StringProperty(
+        name="Last Generated Script",
+        description="The last script that was generated and executed",
+        default=""
+    )
     bpy.types.Scene.blendergpt_props = bpy.props.PointerProperty(type=BlenderGPTChatProps)
 
-
 def unregister():
-    # Unregister properties first
     del bpy.types.Scene.blender_gpt_prompt
     del bpy.types.Scene.blender_gpt_generated_code
     del bpy.types.Scene.blender_gpt_execution_result
+    del bpy.types.Scene.blender_gpt_last_script
     del bpy.types.Scene.blendergpt_props
 
-    # Then unregister classes in reverse order
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
-
 
 if __name__ == "__main__":
     register()

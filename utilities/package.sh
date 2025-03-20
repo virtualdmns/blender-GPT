@@ -12,4 +12,6 @@ python3 package_addon.py
 # Make the zip file executable
 chmod +x blender_gpt_*.zip
 
+mv blender_gpt_*.zip ../
+
 echo "Packaging complete!" 
