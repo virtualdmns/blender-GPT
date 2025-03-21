@@ -33,13 +33,13 @@ if addon_dir not in sys.path:
     print(f"Added addon directory to sys.path: {addon_dir}")
 
 # Verify required packages
-required_packages = {'openai': 'openai', 'requests': 'requests'}
+required_packages = {'openai': 'openai'}
 for package, import_name in required_packages.items():
     try:
         __import__(import_name)
         print(f"Successfully imported {package}")
     except ImportError as e:
-        raise ImportError(f"{package} not found. Install with: /Applications/Blender.app/Contents/Resources/4.3/python/bin/python3.11 -m pip install {package}")
+        raise ImportError(f"{package} not found. Use python3.11 -m pip install {package}")
 
 import openai
 
