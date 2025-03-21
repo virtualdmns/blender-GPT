@@ -90,7 +90,7 @@ BlenderGPT is a powerful and flexible Blender addon that harnesses the power of 
    - **Option 3: Load from File**:
      - Open the BlenderGPT panel in the Sidebar (`View3D > Sidebar > BlenderGPT`).
      - Expand the "API Key Status" section.
-     - If no API key is found, click "Load API Key" to select a `.txt` or `.json` file containing your API key.
+     - If no API key is found, click "Load API Key" to select a `.json` file containing your API key.
 
 4. **Install Dependencies**:
    - Ensure the `openai` Python package is installed for Blender's Python environment:
