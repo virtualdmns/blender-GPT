@@ -1,9 +1,9 @@
 [project]
-name = "blender-gpt"
-version = "1.1.1"
-description = "Blender integration powered by OpenAI GPT"
+name = "BlenderGPT"
+version = "2.0.0"
+description = "A Blender addon to generate and execute 3D scenes using OpenAI GPT with natural language prompts"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [
     {name = "virtualdmns", email = "virtualdmns@gmail.com"}
 ]
@@ -15,17 +15,12 @@ classifiers = [
 ]
 dependencies = [
     "openai>=1.0.0",
+    "requests>=2.0.0",
 ]
-
-[project.scripts]
-blender-gpt = "blender_gpt.addon_blender_gpt:main"
 
 [build-system]
 requires = ["setuptools>=61.0", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[tool.setuptools]
-package-dir = {"" = "src"}
 
 [project.urls]
 "Homepage" = "https://github.com/virtualdmns/blender-gpt"
