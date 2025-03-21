@@ -40,7 +40,7 @@ BlenderGPT is a powerful and flexible Blender addon that harnesses the power of 
   - Click on any line of a message in the chat to view the full message in a popup, making it easy to read longer responses.
 
 - **API Key Management**:
-  - View API key status in the UI to ensure it’s configured correctly.
+  - View API key status in the UI to ensure it's configured correctly.
   - Load an API key from a file or set it in the addon preferences (`Edit > Preferences > Add-ons > BlenderGPT`).
   - The API key is saved to a `config.json` file beside the addon for persistence.
 
@@ -93,13 +93,13 @@ BlenderGPT is a powerful and flexible Blender addon that harnesses the power of 
      - If no API key is found, click "Load API Key" to select a `.json` file containing your API key.
 
 4. **Install Dependencies**:
-   - Ensure the `openai` Python package is installed for Blender's Python environment:
+   - Ensure the `openai` and `requests` Python packages are installed for Blender's Python environment:
      ```bash
-     /Applications/Blender.app/Contents/Resources/4.3/python/bin/python3.11 -m pip install openai 
+     /Applications/Blender.app/Contents/Resources/4.3/python/bin/python3.11 -m pip install openai requests
      ```
    - On Windows, the path might be:
      ```bash
-     "C:\Program Files\Blender Foundation\Blender 4.3\4.3\python\bin\python.exe" -m pip install openai 
+     "C:\Program Files\Blender Foundation\Blender 4.3\4.3\python\bin\python.exe" -m pip install openai requests
      ```
 
 ## Usage
@@ -183,14 +183,13 @@ BlenderGPT is designed to be highly flexible, adapting to your creative process:
 
 - Blender 4.3 or later (as specified in `bl_info`)
 - OpenAI API key
-- Python package: `openai>=1.0.0`
+- Python packages: `openai>=1.0.0`, `requests>=2.0.0`
 
 ## Notes
 
 - Ensure your API key is correctly configured to avoid errors. Check the "API Key Status" section for confirmation.
 - The addon includes safety checks to prevent execution of dangerous scripts, ensuring a secure experience.
 - Iterations can be resource-intensive depending on the complexity of the scene and the number of iterations. Use Low Detail Mode if responses are slow.
-- The "Edit Script" button in the "Generate Scene" section is currently non-functional due to limitations in Blender’s UI for multiline editing. Use the "Preview Script" button to view the script before execution.
 
 ## Contributing
 

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Dict
 from io import StringIO
 import math
-#import requests
+import requests
 from bpy.types import UILayout
 
 # Debug sys.path
